@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ntufar.stasi",
+  "name": "Stasi",
+  "version": "0.1.0",
+  "author": "Nicolai Tufar",
+  "description": "Athens public-transport arrivals (OASA Telematics) in the Omarchy bar",
+  "kinds": [
+    "bar-widget",
+    "panel"
+  ],
+  "entryPoints": {
+    "barWidget": "src/BarWidget.qml",
+    "panel": "src/Panel.qml"
+  },
+  "icon": "assets/io.github.ntufar.stasi.svg",
+  "barWidget": {
+    "displayName": "Stasi",
+    "description": "Next Athens bus arrival at your watched stop",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
