@@ -58,6 +58,47 @@ function parseStops(raw, legacyStop) {
   return out
 }
 
+// Slippy-map (OSM) math for the pure-QML tile map. Tile size is 256px.
+var TILE_PX = 256
+
+function lonToTileX(lon, z) {
+  return (lon + 180) / 360 * Math.pow(2, z)
+}
+
+function latToTileY(lat, z) {
+  var rad = lat * Math.PI / 180
+  return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z)
+}
+
+function tileXToLon(x, z) {
+  return x / Math.pow(2, z) * 360 - 180
+}
+
+function tileYToLat(y, z) {
+  var n = Math.PI - 2 * Math.PI * y / Math.pow(2, z)
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))
+}
+
+// Pixel of a geo point inside the viewport for a center/zoom/size view.
+function geoToPixel(lat, lng, centerLat, centerLng, zoom, width, height) {
+  var cx = lonToTileX(centerLng, zoom) * TILE_PX
+  var cy = latToTileY(centerLat, zoom) * TILE_PX
+  return {
+    x: lonToTileX(lng, zoom) * TILE_PX - cx + width / 2,
+    y: latToTileY(lat, zoom) * TILE_PX - cy + height / 2
+  }
+}
+
+// Geo point at a viewport pixel (inverse of geoToPixel).
+function pixelToGeo(px, py, centerLat, centerLng, zoom, width, height) {
+  var cx = lonToTileX(centerLng, zoom) * TILE_PX
+  var cy = latToTileY(centerLat, zoom) * TILE_PX
+  return {
+    lat: tileYToLat((cy - height / 2 + py) / TILE_PX, zoom),
+    lng: tileXToLon((cx - width / 2 + px) / TILE_PX, zoom)
+  }
+}
+
 // One panel row: "740 · ΚΗΦΙΣΙΑ - Π. ΦΑΛΗΡΟ · 4ʹ".
 function rowLabel(arrival, fetchedAtMs, tick) {
   var parts = []

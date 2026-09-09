@@ -38,11 +38,19 @@ that already fired is not repeated until it leaves the board and comes back.
 ## Map
 
 The panel shows the arrival board side by side with a map of Athens centered
-at Syntagma (Leaflet + OpenStreetMap tiles, vendored under `assets/leaflet`,
-so only tiles need network). Click a station marker to preview its arrivals;
-search finds stops and bus lines — tapping a line overlays its stops on the
-map. Markers come from the stop index: indexes built before coordinates need
-one rebuild:
+at Syntagma. It is pure QML — stops as tappable dots over OpenStreetMap
+tiles — because QtWebEngine cannot initialize inside the shell process (it
+aborts quickshell at startup; verified via coredump). Tiles are never
+fetched straight from QML: `stasi-client map-tiles` downloads them with an
+identifying User-Agent and caches them under `~/.cache/io.github.ntufar.stasi/tiles`,
+and the map only ever loads that local copy — QML's default network stack
+sends no identifying header and doesn't cache, which is what got tile
+requests blocked (HTTP 418, see osm.wiki/Blocked) before this. Drag to pan,
+scroll or ＋/－ to zoom, tap a dot (or anywhere) to preview the nearest
+stop's arrivals; search finds stops and bus lines, and tapping a line
+overlays its stops in orange with auto-fit. Tiles need network on first
+view of an area; after that they're served from the disk cache. Markers
+come from the stop index: indexes built before coordinates need one rebuild:
 
 ```bash
 ./bin/stasi-client refresh-stops --full

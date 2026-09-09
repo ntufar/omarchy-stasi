@@ -54,10 +54,16 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
   `refresh-stops` hint when the index was never built). Index entries carry
   `lat`/`lng` since the coords rebuild — older indexes need
   `refresh-stops --full` before markers appear.
-- Map bridge (`assets/map.html`, Leaflet vendored in `assets/leaflet/`):
-  QML→page only via `runJavaScript`; page→QML only via `stasi://stop/<code>`
-  navigation intercepted with `IgnoreRequest`. Never add another channel
-  without updating both sides and this contract.
+- Map data feeds a pure-QML tile map (no WebEngine — it crash-loops the
+  shell, see AGENTS.md). Stop dots come from `stops-geo`, line overlays from
+  `line-stops`; all projection math lives in `Model.js` (slippy formulas).
+- `map-tiles --tile z/x/y [--tile ...] [--force-refresh]` → `{"tiles":
+  [{"z","x","y","path"} or {"z","x","y","error"}]}`. Fetches OSM raster
+  tiles with `oasa.USER_AGENT` and disk-caches them
+  (`stasi_client/tiles.py`) — required because `tile.openstreetmap.org`
+  418-blocks requests with no identifying User-Agent (osm.wiki/Blocked).
+  Never point `Image.source` at the remote tile URL; `Panel.qml` always
+  batches through this and uses the returned `file://` path.
 - Watchlist: `setting("stops", [])` (array; strings tolerated) with legacy
   `setting("stop", "")` fallback, normalized by `Model.parseStops`. `saveStops`
   writes `{id, ...settings, stops: [...]}` via `updateEntryInline` and clears

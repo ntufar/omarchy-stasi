@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls as QQC
 import Quickshell
 import Quickshell.Io
-import QtWebEngine
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -57,8 +56,20 @@ Panel {
   property string overlayLine: ""
   property string overlayDescr: ""
 
-  readonly property string mapUrl: hostWidget && hostWidget.pluginRoot
-    ? "file://" + hostWidget.pluginRoot + "/assets/map.html" : ""
+  // ---- Tile-map view (pure QML; QtWebEngine cannot init in-process) ----
+  // Tiles are never fetched straight from QML: OSM's tile usage policy
+  // (osm.wiki/Blocked) requires an identifying User-Agent and local
+  // caching, so every tile goes through `stasi-client map-tiles` (proper
+  // UA + disk cache) and Image only ever loads the cached file:// result.
+  property real mapLat: 37.9755
+  property real mapLng: 23.7348
+  property int mapZoom: 13
+  property var mapTiles: []
+  property var tileCache: ({})
+  property var tileQueue: []
+  property var visibleStops: []
+  property var overlayGeo: []
+  property var overlayStops: []
 
   readonly property bool previewing: root.previewCode !== ""
   readonly property var shownArrivals: root.previewing ? root.previewArrivals : root.arrivals
@@ -142,15 +153,133 @@ Panel {
     geoProc.running = true
   }
 
+  onHostWidgetChanged: {
+    root.updateTiles()
+    root.loadMapMarkers()
+  }
+
+  function updateTiles() {
+    var n = Math.pow(2, mapZoom)
+    var cx = Model.lonToTileX(mapLng, mapZoom)
+    var cy = Model.latToTileY(mapLat, mapZoom)
+    var x0 = Math.floor(cx - 220 / 256), x1 = Math.floor(cx + 220 / 256)
+    var y0 = Math.floor(cy - 260 / 256), y1 = Math.floor(cy + 260 / 256)
+    var tiles = []
+    for (var x = x0; x <= x1; x++) {
+      for (var y = y0; y <= y1; y++) {
+        if (y < 0 || y >= n) continue
+        var wx = ((x % n) + n) % n
+        var key = mapZoom + "/" + wx + "/" + y
+        var path = root.tileCache[key] || ""
+        if (path === "") root.queueTileFetch(key)
+        tiles.push({
+          path: path,
+          px: (x - cx) * 256 + 220,
+          py: (y - cy) * 256 + 260
+        })
+      }
+    }
+    root.mapTiles = tiles
+  }
+
+  function queueTileFetch(key) {
+    if (root.tileCache.hasOwnProperty(key)) return
+    if (root.tileQueue.indexOf(key) !== -1) return
+    root.tileQueue = root.tileQueue.concat([key])
+    tileFetchDebounce.restart()
+  }
+
+  function fetchQueuedTiles() {
+    if (!hostWidget || !hostWidget.helperPath) return
+    if (root.tileQueue.length === 0) return
+    if (tileProc.running) {
+      tileFetchDebounce.restart()
+      return
+    }
+    var batch = root.tileQueue
+    root.tileQueue = []
+    var args = [hostWidget.helperPath, "map-tiles"]
+    for (var i = 0; i < batch.length; i++) {
+      args.push("--tile")
+      args.push(batch[i])
+    }
+    tileProc.command = args
+    tileProc.running = true
+  }
+
+  function projectStops(list) {
+    var out = []
+    for (var i = 0; i < list.length && out.length < 500; i++) {
+      var s = list[i]
+      if (s.lat === null || s.lat === undefined || s.lng === null || s.lng === undefined) continue
+      var p = Model.geoToPixel(s.lat, s.lng, mapLat, mapLng, mapZoom, 440, 520)
+      if (p.x < -10 || p.x > 450 || p.y < -10 || p.y > 530) continue
+      out.push({ code: s.stop_code, descr: s.descr, px: p.x, py: p.y })
+    }
+    return out
+  }
+
+  function updateMarkers() {
+    root.visibleStops = projectStops(geoCache)
+    root.overlayStops = projectStops(overlayGeo)
+  }
+
+  function panMapBy(dx, dy) {
+    var z = mapZoom
+    var cx = Model.lonToTileX(mapLng, z) * 256 + dx
+    var cy = Model.latToTileY(mapLat, z) * 256 + dy
+    mapLng = Model.tileXToLon(cx / 256, z)
+    mapLat = Model.tileYToLat(cy / 256, z)
+    updateTiles()
+  }
+
+  function zoomMap(delta) {
+    mapZoom = Math.max(2, Math.min(18, mapZoom + delta))
+    updateTiles()
+    updateMarkers()
+  }
+
+  function recenterSyntagma() {
+    mapLat = 37.9755
+    mapLng = 23.7348
+    mapZoom = 13
+    updateTiles()
+    updateMarkers()
+  }
+
   function focusStopOnMap(code) {
     for (var i = 0; i < geoCache.length; i++) {
-      if (geoCache[i].stop_code === code) {
-        mapView.runJavaScript("focusStop(" + JSON.stringify(code) + ", "
-          + geoCache[i].lat + ", " + geoCache[i].lng + ")")
+      if (geoCache[i].stop_code === code && geoCache[i].lat !== null) {
+        mapLat = geoCache[i].lat
+        mapLng = geoCache[i].lng
+        mapZoom = Math.max(mapZoom, 15)
+        updateTiles()
+        updateMarkers()
         return
       }
     }
-    mapView.runJavaScript("focusStop(" + JSON.stringify(code) + ")")
+  }
+
+  function tapMapAt(px, py) {
+    var best = null
+    var bestD = 24 * 24
+    for (var i = 0; i < visibleStops.length; i++) {
+      var d = Math.pow(visibleStops[i].px - px, 2) + Math.pow(visibleStops[i].py - py, 2)
+      if (d < bestD) {
+        bestD = d
+        best = visibleStops[i]
+      }
+    }
+    if (best) root.previewStop(best.code, best.descr)
+  }
+
+  function fitZoom(lat0, lng0, lat1, lng1) {
+    for (var z = 18; z >= 2; z--) {
+      var w = Math.abs(Model.lonToTileX(lng1, z) - Model.lonToTileX(lng0, z)) * 256
+      var h = Math.abs(Model.latToTileY(lat1, z) - Model.latToTileY(lat0, z)) * 256
+      if (w <= 400 && h <= 480) return z
+    }
+    return 2
   }
 
   function showLineOverlay(lineCode, lineDescr) {
@@ -164,7 +293,8 @@ Panel {
   function clearLineOverlay() {
     root.overlayLine = ""
     root.overlayDescr = ""
-    mapView.runJavaScript("clearLineStops()")
+    root.overlayGeo = []
+    root.overlayStops = []
   }
 
   Process {
@@ -241,6 +371,41 @@ Panel {
     }
   }
 
+  // Coalesces the tile requests a drag/zoom generates into one batched
+  // `map-tiles` call instead of a process per tile.
+  Timer {
+    id: tileFetchDebounce
+    interval: 120
+    repeat: false
+    onTriggered: root.fetchQueuedTiles()
+  }
+
+  Process {
+    id: tileProc
+    stdout: StdioCollector {
+      id: tileOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        try {
+          var payload = JSON.parse(tileOut.text)
+          var results = (payload && payload.tiles) || []
+          var cache = Object.assign({}, root.tileCache)
+          for (var i = 0; i < results.length; i++) {
+            var t = results[i]
+            if (t && t.path) cache[t.z + "/" + t.x + "/" + t.y] = "file://" + t.path
+          }
+          root.tileCache = cache
+        } catch (e) {
+          // leave the failed keys uncached; the next pan/zoom re-queues them
+        }
+      }
+      if (root.tileQueue.length > 0) tileFetchDebounce.restart()
+      root.updateTiles()
+    }
+  }
+
   Process {
     id: linesProc
     stdout: StdioCollector {
@@ -295,13 +460,8 @@ Panel {
         var payload = JSON.parse(geoOut.text)
         var stops = (payload && payload.stops) || []
         root.geoCache = stops
-        var rows = []
-        for (var i = 0; i < stops.length; i++) {
-          rows.push([stops[i].stop_code, stops[i].lat, stops[i].lng, stops[i].descr])
-        }
-        mapView.runJavaScript("loadStops(" + JSON.stringify(rows) + ")", function(count) {
-          root.mapState = count + " stations"
-        })
+        root.updateMarkers()
+        root.mapState = stops.length + " stations"
       } catch (e) {
         root.mapState = "stations unavailable"
       }
@@ -322,17 +482,32 @@ Panel {
       }
       try {
         var payload = JSON.parse(lineOut.text)
-        var rows = []
+        var geo = []
         var routes = (payload && payload.routes) || []
         for (var r = 0; r < routes.length; r++) {
           var stops = routes[r].stops || []
           for (var i = 0; i < stops.length; i++) {
-            if (stops[i].lat !== undefined && stops[i].lat !== null) {
-              rows.push([stops[i].stop_code, stops[i].lat, stops[i].lng, stops[i].descr])
-            }
+            geo.push(stops[i])
           }
         }
-        mapView.runJavaScript("showLineStops(" + JSON.stringify(rows) + ")")
+        root.overlayGeo = geo
+        var lat0 = 90, lng0 = 180, lat1 = -90, lng1 = -180
+        var found = false
+        for (var i = 0; i < geo.length; i++) {
+          if (geo[i].lat === null || geo[i].lat === undefined) continue
+          found = true
+          lat0 = Math.min(lat0, geo[i].lat)
+          lat1 = Math.max(lat1, geo[i].lat)
+          lng0 = Math.min(lng0, geo[i].lng)
+          lng1 = Math.max(lng1, geo[i].lng)
+        }
+        if (found) {
+          mapLat = (lat0 + lat1) / 2
+          mapLng = (lng0 + lng1) / 2
+          mapZoom = fitZoom(lat0, lng0, lat1, lng1)
+          updateTiles()
+        }
+        root.updateMarkers()
       } catch (e) {
         root.overlayLine = ""
         root.overlayDescr = ""
@@ -733,25 +908,155 @@ Panel {
       width: 440
       spacing: 8
 
-      WebEngineView {
-        id: mapView
-        width: 440
-        height: 560
-        url: root.mapUrl
+      Row {
+        width: parent.width
+        spacing: 16
 
-        onNavigationRequested: function(request) {
-          var target = String(request.url)
-          if (target.indexOf("stasi://stop/") === 0) {
-            request.action = WebEngineView.IgnoreRequest
-            root.previewStop(decodeURIComponent(target.slice(13)), "")
+        Text {
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: 14
+          font.bold: true
+          text: "＋"
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.zoomMap(1)
           }
         }
 
-        onLoadingChanged: function(loadRequest) {
-          if (loadRequest.status === WebEngineView.LoadSucceededStatus) {
-            root.loadMapMarkers()
-          } else if (loadRequest.status === WebEngineView.LoadFailedStatus) {
-            root.mapState = "map failed to load"
+        Text {
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: 14
+          font.bold: true
+          text: "－"
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.zoomMap(-1)
+          }
+        }
+
+        Text {
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          font.underline: true
+          text: "⌖ Syntagma"
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.recenterSyntagma()
+          }
+        }
+
+        Text {
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          text: "drag to pan · scroll to zoom · tap a dot"
+        }
+      }
+
+      Item {
+        id: mapView
+        width: 440
+        height: 520
+
+        MouseArea {
+          id: mapPan
+          anchors.fill: parent
+          property real pressX: 0
+          property real pressY: 0
+          property bool panning: false
+          onPressed: function(e) {
+            pressX = e.x
+            pressY = e.y
+            panning = false
+          }
+          onPositionChanged: function(e) {
+            if (!pressed) return
+            if (!panning && Math.hypot(e.x - pressX, e.y - pressY) < 4) return
+            panning = true
+            root.panMapBy(pressX - e.x, pressY - e.y)
+            pressX = e.x
+            pressY = e.y
+          }
+          onReleased: function(e) {
+            if (panning) {
+              panning = false
+              root.updateMarkers()
+            } else {
+              root.tapMapAt(e.x, e.y)
+            }
+          }
+          onWheel: function(w) {
+            if (w.angleDelta.y > 0) root.zoomMap(1)
+            else root.zoomMap(-1)
+          }
+        }
+
+        Repeater {
+          model: root.mapTiles
+
+          Image {
+            required property var modelData
+            x: modelData.px
+            y: modelData.py
+            width: 256
+            height: 256
+            source: modelData.path
+            asynchronous: true
+          }
+        }
+
+        Repeater {
+          model: root.overlayStops
+
+          Rectangle {
+            required property var modelData
+            x: modelData.px - 7
+            y: modelData.py - 7
+            width: 14
+            height: 14
+            radius: 7
+            color: "#b3541e"
+            border.color: "white"
+            border.width: 2
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.previewStop(modelData.code, "")
+            }
+          }
+        }
+
+        Repeater {
+          model: root.visibleStops
+
+          Rectangle {
+            required property var modelData
+            x: modelData.px - 5
+            y: modelData.py - 5
+            width: 10
+            height: 10
+            radius: 5
+            color: "white"
+            border.color: "#333333"
+            border.width: 1
+            visible: root.overlayStops.length === 0
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.previewStop(modelData.code, modelData.descr)
+            }
           }
         }
       }
@@ -764,7 +1069,7 @@ Panel {
         font.pixelSize: 12
         wrapMode: Text.WordWrap
         text: root.overlayLine !== ""
-          ? "Line " + root.overlayDescr + " — tap × to clear"
+          ? "Line " + root.overlayDescr + " — tap to clear"
           : root.mapState
         visible: text !== ""
 
@@ -775,6 +1080,8 @@ Panel {
           onClicked: root.clearLineOverlay()
         }
       }
+
+      Component.onCompleted: root.updateTiles()
     }
   }
 }

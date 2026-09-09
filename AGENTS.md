@@ -74,13 +74,22 @@ ln -sfn /usr/share/omarchy/shell/Commons /usr/share/omarchy/shell/Ui /tmp/qmlimp
 
 - `search-lines <q>`, `line-stops --line <code>`, `stops-geo` feed the map:
   line search, per-line route/stop overlay, and all marker coordinates.
-- Map page is `assets/map.html` (Leaflet + markercluster vendored in
-  `assets/leaflet/`; OSM tiles need network). QML talks to it only via
-  `runJavaScript` (`loadStops`/`focusStop`/`showLineStops`/`clearLineStops`);
-  marker taps navigate to `stasi://stop/<code>`, intercepted in
-  `onNavigationRequested` (IgnoreRequest) into the existing preview flow.
-  Panel layout: 400px board + 440px map (`WebEngineView`), contentWidth 880.
+- Map is pure QML in `Panel.qml`: OSM tile `Image`s + stop dots + orange
+  line overlay, slippy math in `Model.js` (oracle-checked node-vs-Python).
+  NEVER use `QtWebEngine`/`WebEngineView` here — its constructor calls
+  `qFatal` inside quickshell and crash-loops the whole shell (coredump
+  proven 2026-09-10). Same reason: no other in-process web content.
+  Panel layout: 400px board + 440px map, contentWidth 880.
   Old `stops_index.json` files lack lat/lng — markers need `refresh-stops --full`.
+- NEVER put `https://tile.openstreetmap.org/...` in an `Image.source` —
+  Qt's default network stack sends no identifying User-Agent and never
+  caches, which got the app HTTP-418-blocked under OSM's tile usage policy
+  (osm.wiki/Blocked, hit 2026-09-10). Tiles go through
+  `stasi-client map-tiles --tile z/x/y` (`stasi_client/tiles.py`), which
+  fetches with `oasa.USER_AGENT` and disk-caches under
+  `~/.cache/io.github.ntufar.stasi/tiles/`; `Panel.qml` batches/debounces
+  requests (`tileCache`/`tileQueue`/`tileFetchDebounce`) and points `Image`
+  at the returned `file://` path, never the remote URL.
 
 Done: scaffold, arrivals, widget, board, stop search (+ preview), watchlist,
 alerts, map. Next: maintenance only.

@@ -3,7 +3,7 @@ import argparse
 import json
 import sys
 
-from stasi_client import oasa
+from stasi_client import oasa, tiles
 
 
 def cmd_arrivals(args):
@@ -46,6 +46,21 @@ def cmd_stops_geo(args):
     if args.limit is not None:
         stops = stops[:max(0, args.limit)]
     json.dump({"stops": stops}, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
+def cmd_map_tiles(args):
+    refs = []
+    for ref in args.tile:
+        parts = ref.split("/")
+        if len(parts) != 3:
+            raise RuntimeError("bad tile ref (want z/x/y): %s" % ref)
+        try:
+            refs.append(tuple(int(p) for p in parts))
+        except ValueError:
+            raise RuntimeError("bad tile ref (want z/x/y): %s" % ref)
+    results = tiles.fetch_tiles(refs, force_refresh=args.force_refresh)
+    json.dump({"tiles": results}, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
 
 
@@ -100,6 +115,15 @@ def build_parser():
     stops_geo.add_argument("--limit", type=int, default=None,
                            help="max stops (default all with coordinates)")
     stops_geo.set_defaults(func=cmd_stops_geo)
+    map_tiles = sub.add_parser("map-tiles",
+                               help="fetch + disk-cache OSM raster tiles (OSM tile policy: "
+                                    "identifying User-Agent + local cache, never bare-fetched "
+                                    "from QML)")
+    map_tiles.add_argument("--tile", required=True, action="append",
+                           help="z/x/y tile ref (repeat for a batch)")
+    map_tiles.add_argument("--force-refresh", action="store_true",
+                           help="ignore the on-disk tile cache")
+    map_tiles.set_defaults(func=cmd_map_tiles)
     refresh = sub.add_parser("refresh-stops",
                              help="rebuild the stop-search index (slow first run)")
     refresh.add_argument("--full", action="store_true",
