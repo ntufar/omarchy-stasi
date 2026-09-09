@@ -1,6 +1,7 @@
 # Stasi as an Omarchy Plugin — Architecture & Implementation Plan
 
-Status: investigation complete, not yet implemented.
+Status: phases 0–3 + stop search implemented and live-verified (2026-09-09).
+Remaining: watchlist/multiple-stop settings, alerts.
 Date: 2026-09-09.
 
 ## 1. Verdict
@@ -123,8 +124,10 @@ not look stuck when OASA repeats an ETA.
   strings like the app). Acceptance: matches Android arrivals for the same stop
   within one poll interval.
 - [ ] **Phase 4 — settings + search (1–2 days).** Watchlist editing persisted to
-  shell.json entry; `search` subcommand with `GreekText.kt` normalization port.
-  Acceptance: Greeklish query `syntagma` finds ΣΥΝΤΑΓΜΑ.
+  shell.json entry (open); `search` subcommand with `GreekText.kt`
+  normalization port (done 2026-09-09: `stasi-client search`, cached
+  `stops_index.json` via `refresh-stops`, panel search field + tap-to-preview).
+  Acceptance: Greeklish query `syntagma` finds ΣΥΝΤΑΓΜΑ (verified live).
 - [ ] **Phase 5 — alerts + polish (optional, 1–2 days).** Threshold setting +
   desktop notification on ≤ threshold minutes; icon asset; theme-aware colors via
   `qs.Commons`/`qs.Ui` (`Style`, `Color`); README with install commands.

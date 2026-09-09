@@ -9,10 +9,20 @@ import time
 import urllib.parse
 import urllib.request
 
+from stasi_client import greek
+
 BASE_URL = "https://telematics.oasa.gr/"
 USER_AGENT = "Stasi-Omarch/1.0 (+https://github.com/ntufar/omarchy-stasi)"
 RATE_LIMIT_SECONDS = 1.2
 ARRIVALS_CACHE_TTL_SECONDS = 20
+# Mirror the Android 24 h lines/stops cache: the stop-search corpus is a
+# crawled snapshot (webGetLines -> webGetRoutes -> webGetStops), refreshed
+# explicitly via `stasi-client refresh-stops`, not on every query.
+CATALOG_CACHE_TTL_SECONDS = 24 * 3600
+STOP_INDEX_FILENAME = "stops_index.json"
+# Mirror SearchViewModel/SearchDao: min 2 chars, substring match, cap results.
+SEARCH_MIN_CHARS = 2
+SEARCH_LIMIT_DEFAULT = 120
 REQUEST_TIMEOUT_SECONDS = 20
 
 
@@ -126,3 +136,194 @@ def get_stop_arrivals(stop_code, force_refresh=False):
     except OSError:
         pass
     return payload
+
+
+def _read_json_cache(name, ttl_seconds):
+    """Return cached JSON payload, or None when missing/stale/unreadable."""
+    try:
+        with open(os.path.join(cache_dir(), name)) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if time.time() - payload.get("cached_at", 0) >= ttl_seconds:
+        return None
+    return payload.get("data")
+
+
+def _write_json_cache(name, data):
+    try:
+        with open(os.path.join(cache_dir(), name), "w") as handle:
+            json.dump({"cached_at": time.time(), "data": data}, handle)
+    except OSError:
+        pass
+
+
+def _clean_str(value):
+    return (value or "").strip()
+
+
+def shape_lines(raw_items):
+    """Normalize one webGetLines payload (OasaLineJson fields)."""
+    lines = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        lines.append({
+            "line_code": _clean_str(item.get("LineCode")),
+            "line_id": _clean_str(item.get("LineID")),
+            "line_descr": _clean_str(item.get("LineDescr")),
+        })
+    return [line for line in lines if line["line_code"]]
+
+
+def shape_routes(raw_items):
+    """Normalize one webGetRoutes payload (OasaRouteJson fields)."""
+    routes = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        routes.append({
+            "route_code": _clean_str(item.get("RouteCode")),
+            "line_code": _clean_str(item.get("LineCode")),
+            "route_descr": _clean_str(item.get("RouteDescr")),
+        })
+    return [route for route in routes if route["route_code"]]
+
+
+def shape_catalog_stops(raw_items):
+    """Normalize one webGetStops payload (OasaWebStopJson fields)."""
+    stops = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        stop_code = _clean_str(item.get("StopCode"))
+        if not stop_code:
+            continue
+        stops.append({
+            "stop_code": stop_code,
+            "descr": _clean_str(item.get("StopDescr")),
+            "descr_eng": _clean_str(item.get("StopDescrEng")),
+        })
+    return stops
+
+
+def get_lines(force_refresh=False):
+    """Return [{line_code, line_id, line_descr}]; cached 24 h like Android."""
+    if not force_refresh:
+        cached = _read_json_cache("lines.json", CATALOG_CACHE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+    lines = shape_lines(_post("webGetLines", {}))
+    _write_json_cache("lines.json", lines)
+    return lines
+
+
+def get_routes(line_code, force_refresh=False):
+    """Return [{route_code, line_code, route_descr}] for a line; cached 24 h."""
+    line_code = _clean_str(line_code)
+    if not line_code:
+        raise ValueError("line code is required")
+    name = "routes_%s.json" % line_code
+    if not force_refresh:
+        cached = _read_json_cache(name, CATALOG_CACHE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+    routes = shape_routes(_post("webGetRoutes", {"p1": line_code}))
+    _write_json_cache(name, routes)
+    return routes
+
+
+def get_route_stops(route_code, force_refresh=False):
+    """Return [{stop_code, descr, descr_eng}] for a route; cached 24 h."""
+    route_code = _clean_str(route_code)
+    if not route_code:
+        raise ValueError("route code is required")
+    name = "routestops_%s.json" % route_code
+    if not force_refresh:
+        cached = _read_json_cache(name, CATALOG_CACHE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+    stops = shape_catalog_stops(_post("webGetStops", {"p1": route_code}))
+    _write_json_cache(name, stops)
+    return stops
+
+
+def build_stop_index(force_refresh=False, progress=None):
+    """Crawl lines -> routes -> stops into stops_index.json.
+
+    Respects the 1.2 s endpoint throttle via _post; per-level 24 h caches
+    make repeat runs incremental unless force_refresh is set. progress, when
+    given, is called as progress(lines_done, lines_total) after each line.
+    Returns {"built_at", "stops", "lines", "routes"} summary counts.
+    """
+    lines = get_lines(force_refresh=force_refresh)
+    seen = set()
+    index_stops = []
+    route_count = 0
+    for pos, line in enumerate(lines):
+        routes = get_routes(line["line_code"], force_refresh=force_refresh)
+        route_count += len(routes)
+        for route in routes:
+            for stop in get_route_stops(route["route_code"],
+                                        force_refresh=force_refresh):
+                if stop["stop_code"] in seen:
+                    continue
+                seen.add(stop["stop_code"])
+                index_stops.append({
+                    "stop_code": stop["stop_code"],
+                    "descr": stop["descr"],
+                    "norm": greek.stop_search_norm(stop["stop_code"],
+                                                   stop["descr"]),
+                })
+        if progress is not None:
+            progress(pos + 1, len(lines))
+    payload = {
+        "built_at": time.time(),
+        "stops": index_stops,
+    }
+    _write_json_cache(STOP_INDEX_FILENAME, payload["stops"])
+    try:
+        with open(os.path.join(cache_dir(), "stops_index_meta.json"), "w") as handle:
+            json.dump({"built_at": payload["built_at"],
+                       "stops": len(index_stops),
+                       "lines": len(lines),
+                       "routes": route_count}, handle)
+    except OSError:
+        pass
+    return {"built_at": payload["built_at"], "stops": len(index_stops),
+            "lines": len(lines), "routes": route_count}
+
+
+def load_stop_index():
+    """Return the stop index list, or None when never built."""
+    stops = _read_json_cache(STOP_INDEX_FILENAME, float("inf"))
+    return stops
+
+
+def search_stops(query, limit=SEARCH_LIMIT_DEFAULT, index=None):
+    """Port of OasaRepository.searchStops: Greeklish-aware substring match.
+
+    Normalizes the query exactly like Android (Latin expansion, accent strip,
+    min 2 chars, %/_ scrubbed). Ranking is a deliberate small deviation from
+    the unordered DAO query: stop-code prefix, then name prefix, then
+    substring, stable within each group, capped at limit.
+    """
+    needle = greek.normalize_greek(
+        greek.expand_latin_query(query)).strip().replace("%", "").replace("_", "")
+    if len(needle) < SEARCH_MIN_CHARS:
+        return []
+    stops = index if index is not None else (load_stop_index() or [])
+    code_hits, prefix_hits, sub_hits = [], [], []
+    for stop in stops:
+        code = _clean_str(stop.get("stop_code"))
+        norm = stop.get("norm") or greek.stop_search_norm(code, stop.get("descr"))
+        if code.startswith(needle):
+            code_hits.append(stop)
+        elif norm.startswith(needle):
+            prefix_hits.append(stop)
+        elif needle in norm:
+            sub_hits.append(stop)
+    ranked = code_hits + prefix_hits + sub_hits
+    return [{"stop_code": _clean_str(stop.get("stop_code")),
+             "descr": _clean_str(stop.get("descr"))}
+            for stop in ranked[:max(0, limit)]]
