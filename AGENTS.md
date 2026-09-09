@@ -34,8 +34,10 @@ ln -sfn /usr/share/omarchy/shell/Commons /usr/share/omarchy/shell/Ui /tmp/qmlimp
 
 - One invocation → one JSON doc on stdout, exit 0. Errors → `{"error": msg}`
   on stdout, nonzero exit. Never break this shape.
-- `arrivals` payload: `{"stop", "fetched_at" (epoch s), "arrivals": [...]}`.
-  CLI adds friendly `line`/`destination` keys; QML reads both.
+- `arrivals` payload: `{"stops": [per-stop payloads...], "fetched_at"
+  (oldest snapshot), "arrivals" (merged, known minutes first), "cached"}`.
+  Each arrival adds friendly `line`/`destination` and owning `stop` keys.
+  One failing stop yields an `{"error"}` section, not a failed call.
 - `search` needs a built index (`~/.cache/io.github.ntufar.stasi/stops_index.json`);
   without it, it errors with a `refresh-stops` hint. Panel surfaces that string.
 - Rate limit ~1 req/1.2 s per endpoint (enforced in `oasa._throttle`); caches:
@@ -70,6 +72,6 @@ ln -sfn /usr/share/omarchy/shell/Commons /usr/share/omarchy/shell/Ui /tmp/qmlimp
 
 ## Roadmap (from docs/OMARCHY_PLUGIN.md)
 
-Done: scaffold, arrivals, widget, board, stop search (+ preview).
-Next: watchlist/multiple-stop settings, arrival alerts.
+Done: scaffold, arrivals, widget, board, stop search (+ preview), watchlist.
+Next: arrival alerts.
 Out of scope: GPS nearby, route map, timetable.

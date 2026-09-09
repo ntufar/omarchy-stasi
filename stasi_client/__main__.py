@@ -7,11 +7,7 @@ from stasi_client import oasa
 
 
 def cmd_arrivals(args):
-    payload = oasa.get_stop_arrivals(args.stop, force_refresh=args.force_refresh)
-    # QML reads line/destination keys; keep both raw and friendly names.
-    for arrival in payload["arrivals"]:
-        arrival["line"] = arrival.get("line_code") or ""
-        arrival["destination"] = arrival.get("route_descr") or ""
+    payload = oasa.get_stops_arrivals(args.stop, force_refresh=args.force_refresh)
     json.dump(payload, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
 
@@ -37,8 +33,9 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="stasi-client",
                                      description="OASA arrivals helper for the Stasi Omarchy plugin")
     sub = parser.add_subparsers(dest="command", required=True)
-    arrivals = sub.add_parser("arrivals", help="live arrivals for a stop code")
-    arrivals.add_argument("--stop", required=True, help="OASA stop code")
+    arrivals = sub.add_parser("arrivals", help="live arrivals for stop codes")
+    arrivals.add_argument("--stop", required=True, action="append",
+                          help="OASA stop code (repeat for a watchlist)")
     arrivals.add_argument("--force-refresh", action="store_true",
                           help="skip the ~20 s disk cache")
     arrivals.set_defaults(func=cmd_arrivals)

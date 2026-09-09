@@ -12,7 +12,9 @@ BarWidget {
   moduleName: "io.github.ntufar.stasi"
 
   property string stopCode: setting("stop", "")
+  property var stopList: Model.parseStops(setting("stops", []), stopCode)
   property var arrivals: []
+  property var stopSections: []
   property double fetchedAt: 0
   property string error: ""
   property int tick: 0
@@ -21,15 +23,50 @@ BarWidget {
     ? bar.barWidgetRegistry.metadataFor(moduleName) : null
   readonly property string helperPath: widgetMetadata && widgetMetadata.sourceDir
     ? String(widgetMetadata.sourceDir) + "/bin/stasi-client" : ""
-  readonly property string displayText: Model.barLabel(stopCode, arrivals, fetchedAt, tick, error)
-  readonly property string tooltip: stopCode === ""
-    ? "Stasi: set a stop via `omarchy bar set io.github.ntufar.stasi stop <code>`"
-    : "Stasi " + stopCode + (error !== "" ? " — " + error : "")
+  readonly property string displayText: Model.barLabel(
+    stopList.length > 0 ? stopList.join(" ") : "", arrivals, fetchedAt, tick, error)
+  readonly property string tooltip: stopList.length === 0
+    ? "Stasi: search stops in the panel, or `omarchy bar set io.github.ntufar.stasi stops <code1,code2>`"
+    : "Stasi " + stopList.join(" · ") + (error !== "" ? " — " + error : "")
 
   function refresh() {
-    if (!helperPath || stopCode === "" || fetchProc.running) return
-    fetchProc.command = [helperPath, "arrivals", "--stop", stopCode]
+    if (!helperPath || stopList.length === 0 || fetchProc.running) return
+    var cmd = [helperPath, "arrivals"]
+    for (var i = 0; i < stopList.length; i++) {
+      cmd.push("--stop")
+      cmd.push(stopList[i])
+    }
+    fetchProc.command = cmd
     fetchProc.running = true
+  }
+
+  // Watchlist persistence (clock-panel pattern): applied locally first so the
+  // UI updates on the click; the shell.json write comes back as the same value.
+  // Also clears the legacy single `stop` key so an unwatched stop stays gone.
+  function saveStops(list) {
+    var entry = { id: moduleName }
+    for (var key in settings) if (key !== "id") entry[key] = settings[key]
+    entry.stops = list
+    entry.stop = ""
+    settings = entry
+    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function")
+      bar.shell.updateEntryInline(moduleName, entry)
+  }
+
+  function watchStop(code) {
+    code = String(code || "").trim()
+    if (code === "" || stopList.indexOf(code) !== -1) return
+    var list = stopList.slice()
+    list.push(code)
+    saveStops(list)
+  }
+
+  function unwatchStop(code) {
+    var list = []
+    for (var i = 0; i < stopList.length; i++) {
+      if (stopList[i] !== code) list.push(stopList[i])
+    }
+    if (list.length !== stopList.length) saveStops(list)
   }
 
   function handleResult(exitCode, text) {
@@ -49,8 +86,17 @@ BarWidget {
         return
       }
       root.arrivals = payload.arrivals || []
+      root.stopSections = payload.stops || []
       root.fetchedAt = (payload.fetched_at || 0) * 1000
       root.error = ""
+      if (root.arrivals.length === 0) {
+        for (var i = 0; i < root.stopSections.length; i++) {
+          if (root.stopSections[i].error) {
+            root.error = String(root.stopSections[i].error)
+            break
+          }
+        }
+      }
     } catch (e) {
       root.error = "bad response"
     }
@@ -84,8 +130,9 @@ BarWidget {
 
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
-  onStopCodeChanged: {
+  onStopListChanged: {
     root.arrivals = []
+    root.stopSections = []
     root.fetchedAt = 0
     root.error = ""
     root.refresh()
@@ -107,9 +154,7 @@ BarWidget {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: {
-      if (root.stopCode !== "") root.refresh()
-    }
+    onTriggered: root.refresh()
   }
 
   Timer {

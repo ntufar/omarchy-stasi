@@ -18,9 +18,14 @@ omarchy restart shell
 ## Configure
 
 ```bash
-# Watch a stop (OASA stop code)
-omarchy bar set io.github.ntufar.stasi stop 060123
+# Watch stops (OASA stop codes, comma-separated)
+omarchy bar set io.github.ntufar.stasi stops 60718,61048
 ```
+
+The pill shows the soonest arrival across the watchlist; the panel lists
+each stop with its next arrival (tap to preview, ✕ to unwatch). You can also
+watch a stop from the panel: search, then ＋ Watch. A legacy single
+`stop` key still works and merges into the list.
 
 ## Layout
 

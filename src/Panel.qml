@@ -29,6 +29,10 @@ Panel {
   readonly property double fetchedAt: hostWidget ? hostWidget.fetchedAt : 0
   readonly property int tick: hostWidget ? hostWidget.tick : 0
   readonly property string error: hostWidget ? hostWidget.error : ""
+  readonly property var watchList: hostWidget && hostWidget.stopList ? hostWidget.stopList : []
+  readonly property var stopSections: hostWidget && hostWidget.stopSections ? hostWidget.stopSections : []
+  readonly property string watchTitle: watchList.length === 0 ? "Stasi"
+    : (watchList.length === 1 ? "Στάση " + watchList[0] : "Stasi · " + watchList.length + " στάσεις")
 
   // ---- Stop search + arrival preview (tapping a result previews that
   // stop's board without changing the watched stop) ----
@@ -43,13 +47,12 @@ Panel {
   property string previewError: ""
 
   readonly property bool previewing: root.previewCode !== ""
-  readonly property string shownStopCode: root.previewing ? root.previewCode : root.stopCode
   readonly property var shownArrivals: root.previewing ? root.previewArrivals : root.arrivals
   readonly property double shownFetchedAt: root.previewing ? root.previewFetchedAt : root.fetchedAt
   readonly property string shownError: root.previewing ? root.previewError : root.error
   readonly property string shownTitle: root.previewing
     ? (root.previewDescr !== "" ? root.previewDescr : "Στάση " + root.previewCode)
-    : (root.stopCode === "" ? "Stasi" : "Στάση " + root.stopCode)
+    : root.watchTitle
 
   function runSearch(text) {
     var q = (text || "").trim()
@@ -209,13 +212,32 @@ Panel {
         font.family: root.contentFontFamily
         font.pixelSize: 12
         font.underline: true
-        text: "← " + (root.previewCode !== "" ? root.previewCode + " · " : "") + "Watched stop"
+        text: "← " + (root.previewCode !== "" ? root.previewCode + " · " : "") + "Watchlist"
         visible: root.previewing
 
         MouseArea {
           anchors.fill: parent
           cursorShape: Qt.PointingHandCursor
           onClicked: root.clearPreview()
+        }
+      }
+
+      Text {
+        width: parent.width
+        color: root.contentForeground
+        opacity: 0.8
+        font.family: root.contentFontFamily
+        font.pixelSize: 12
+        font.underline: true
+        text: "+ Watch " + root.previewCode
+        visible: root.previewing && root.watchList.indexOf(root.previewCode) === -1
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          onClicked: {
+            if (root.hostWidget) root.hostWidget.watchStop(root.previewCode)
+          }
         }
       }
 
@@ -251,10 +273,73 @@ Panel {
         font.family: root.contentFontFamily
         font.pixelSize: 12
         wrapMode: Text.WordWrap
-        text: root.shownStopCode === ""
-          ? "Set a stop: omarchy bar set io.github.ntufar.stasi stop <code>"
+        text: root.watchList.length === 0 && !root.previewing
+          ? "Search for a stop below, or: omarchy bar set io.github.ntufar.stasi stops <code1,code2>"
           : (root.shownArrivals.length === 0 && root.shownError === "" ? "No live arrivals." : "")
         visible: text !== ""
+      }
+
+      Repeater {
+        model: (!root.previewing && root.watchList.length > 1) ? root.stopSections : []
+
+        Item {
+          required property var modelData
+          width: board.width
+          implicitHeight: watchCol.implicitHeight
+
+          Column {
+            id: watchCol
+            width: parent.width - 28
+            spacing: 0
+
+            Text {
+              width: parent.width
+              color: root.contentForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: 14
+              font.bold: true
+              wrapMode: Text.WordWrap
+              text: "Στάση " + modelData.stop
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.previewStop(modelData.stop, "")
+              }
+            }
+
+            Text {
+              width: parent.width
+              color: root.contentForeground
+              opacity: 0.6
+              font.family: root.contentFontFamily
+              font.pixelSize: 12
+              wrapMode: Text.WordWrap
+              text: modelData.error ? String(modelData.error)
+                : (modelData.arrivals && modelData.arrivals.length > 0
+                  ? Model.rowLabel(modelData.arrivals[0], (modelData.fetched_at || 0) * 1000, root.tick)
+                  : "—")
+            }
+          }
+
+          Text {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            color: root.contentForeground
+            opacity: 0.6
+            font.family: root.contentFontFamily
+            font.pixelSize: 14
+            text: "✕"
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (root.hostWidget) root.hostWidget.unwatchStop(modelData.stop)
+              }
+            }
+          }
+        }
       }
 
       Text {
@@ -345,6 +430,12 @@ Panel {
               font.bold: true
               wrapMode: Text.WordWrap
               text: modelData.descr || modelData.stop_code
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.previewStop(modelData.stop_code, modelData.descr || "")
+              }
             }
 
             Text {
@@ -355,12 +446,25 @@ Panel {
               font.pixelSize: 12
               text: "Στάση " + modelData.stop_code
             }
-          }
 
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.previewStop(modelData.stop_code, modelData.descr || "")
+            Text {
+              width: parent.width
+              color: root.contentForeground
+              opacity: 0.8
+              font.family: root.contentFontFamily
+              font.pixelSize: 12
+              font.underline: true
+              text: "＋ Watch"
+              visible: root.watchList.indexOf(modelData.stop_code) === -1
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.hostWidget) root.hostWidget.watchStop(modelData.stop_code)
+                }
+              }
+            }
           }
         }
       }

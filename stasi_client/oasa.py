@@ -138,6 +138,48 @@ def get_stop_arrivals(stop_code, force_refresh=False):
     return payload
 
 
+def _enrich_arrival(arrival, stop_code):
+    # QML reads line/destination keys; keep both raw and friendly names.
+    arrival["line"] = arrival.get("line_code") or ""
+    arrival["destination"] = arrival.get("route_descr") or ""
+    arrival["stop"] = stop_code
+    return arrival
+
+
+def get_stops_arrivals(stop_codes, force_refresh=False):
+    """Return combined arrivals for several stop codes.
+
+    Response: {"stops": [per-stop get_stop_arrivals payloads...],
+    "fetched_at" (oldest snapshot), "arrivals" (merged, known minutes first),
+    "cached"}. One failing stop yields an {"error"} section instead of
+    failing the whole call. Codes are deduped, order preserved.
+    """
+    codes = []
+    for code in stop_codes or []:
+        code = _clean_str(code)
+        if code and code not in codes:
+            codes.append(code)
+    if not codes:
+        raise ValueError("at least one stop code is required")
+    sections = []
+    for code in codes:
+        try:
+            section = get_stop_arrivals(code, force_refresh=force_refresh)
+            section["arrivals"] = [_enrich_arrival(a, code)
+                                   for a in section["arrivals"]]
+        except Exception as exc:
+            section = {"stop": code, "fetched_at": 0, "arrivals": [],
+                       "cached": False, "error": str(exc)}
+        sections.append(section)
+    merged = [arrival for section in sections for arrival in section["arrivals"]]
+    merged.sort(key=lambda a: (a.get("minutes") is None, a.get("minutes") or 0))
+    stamps = [s["fetched_at"] for s in sections if s.get("fetched_at")]
+    return {"stops": sections,
+            "fetched_at": min(stamps) if stamps else 0,
+            "arrivals": merged,
+            "cached": bool(sections) and all(s.get("cached") for s in sections)}
+
+
 def _read_json_cache(name, ttl_seconds):
     """Return cached JSON payload, or None when missing/stale/unreadable."""
     try:

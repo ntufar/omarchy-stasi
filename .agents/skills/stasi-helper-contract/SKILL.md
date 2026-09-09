@@ -10,10 +10,12 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
 
 ## CLI surface (`stasi_client/__main__.py`)
 
-- `arrivals --stop <code> [--force-refresh]` →
-  `{"stop", "fetched_at" (epoch seconds), "arrivals": [...], "cached"}`.
-  Each arrival carries raw OASA fields plus friendly `line` (= `line_code`)
-  and `destination` (= `route_descr`) keys added by the CLI layer.
+- `arrivals --stop <code> [--stop ...] [--force-refresh]` →
+  `{"stops": [per-stop payloads...], "fetched_at" (oldest snapshot),
+  "arrivals" (merged, known minutes first), "cached"}`.
+  Each arrival carries raw OASA fields plus friendly `line` (= `line_code`),
+  `destination` (= `route_descr`) and owning `stop` keys. One failing stop
+  yields an `{"error"}` section instead of failing the whole call.
 - `search <query> [--limit N]` (default 120) →
   `{"query", "stops": [{"stop_code", "descr"}]}`.
 - `refresh-stops [--full]` → `{"built_at", "stops", "lines", "routes"}` on
@@ -41,6 +43,11 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
 - Fetch pattern: `Process` + `StdioCollector { waitForEnd: true }`, parse in
   `onExited`, guard with `proc.running` before starting. Helper path:
   `bar.barWidgetRegistry.metadataFor(moduleName).sourceDir + "/bin/stasi-client"`.
+- Watchlist: `setting("stops", [])` (array; strings tolerated) with legacy
+  `setting("stop", "")` fallback, normalized by `Model.parseStops`. `saveStops`
+  writes `{id, ...settings, stops: [...]}` via `updateEntryInline` and clears
+  legacy `stop` so removals stick; panel calls `hostWidget.watchStop` /
+  `unwatchStop`, never writes settings directly.
 - `import Quickshell.Io` is required in each file using `Process`.
 - Panel search: 250 ms debounce → `search --limit 8` → results list; tap runs
   `arrivals --stop <code>` into preview state, never touching the watched stop.

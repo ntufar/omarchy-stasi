@@ -41,6 +41,23 @@ function barLabel(stopCode, arrivals, fetchedAtMs, tick, error) {
   return line === "" ? m + "ʹ" : line + " · " + m + "ʹ"
 }
 
+// Watchlist: setting("stops") is an array once watch/unwatch persist it, but
+// `omarchy bar set` writes strings, so accept "60718, 61048" / space-separated
+// too. The legacy single `stop` key merges in. Deduped, order preserved.
+function parseStops(raw, legacyStop) {
+  var out = []
+  function push(code) {
+    code = String(code === null || code === undefined ? "" : code).trim()
+    if (code && out.indexOf(code) === -1) out.push(code)
+  }
+  if (typeof raw === "string") raw = raw.split(/[,\s]+/)
+  if (raw && typeof raw.length === "number") {
+    for (var i = 0; i < raw.length; i++) push(raw[i])
+  }
+  push(legacyStop)
+  return out
+}
+
 // One panel row: "740 · ΚΗΦΙΣΙΑ - Π. ΦΑΛΗΡΟ · 4ʹ".
 function rowLabel(arrival, fetchedAtMs, tick) {
   var parts = []
