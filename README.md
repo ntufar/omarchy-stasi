@@ -35,6 +35,19 @@ omarchy bar set io.github.ntufar.stasi alertThreshold 5
 At most one summary notification per 30 s poll (via `notify-send`); a bus
 that already fired is not repeated until it leaves the board and comes back.
 
+## Map
+
+The panel shows the arrival board side by side with a map of Athens centered
+at Syntagma (Leaflet + OpenStreetMap tiles, vendored under `assets/leaflet`,
+so only tiles need network). Click a station marker to preview its arrivals;
+search finds stops and bus lines — tapping a line overlays its stops on the
+map. Markers come from the stop index: indexes built before coordinates need
+one rebuild:
+
+```bash
+./bin/stasi-client refresh-stops --full
+```
+
 ## Layout
 
 ```

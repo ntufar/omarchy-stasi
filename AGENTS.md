@@ -72,6 +72,16 @@ ln -sfn /usr/share/omarchy/shell/Commons /usr/share/omarchy/shell/Ui /tmp/qmlimp
 
 ## Roadmap (from docs/OMARCHY_PLUGIN.md)
 
+- `search-lines <q>`, `line-stops --line <code>`, `stops-geo` feed the map:
+  line search, per-line route/stop overlay, and all marker coordinates.
+- Map page is `assets/map.html` (Leaflet + markercluster vendored in
+  `assets/leaflet/`; OSM tiles need network). QML talks to it only via
+  `runJavaScript` (`loadStops`/`focusStop`/`showLineStops`/`clearLineStops`);
+  marker taps navigate to `stasi://stop/<code>`, intercepted in
+  `onNavigationRequested` (IgnoreRequest) into the existing preview flow.
+  Panel layout: 400px board + 440px map (`WebEngineView`), contentWidth 880.
+  Old `stops_index.json` files lack lat/lng — markers need `refresh-stops --full`.
+
 Done: scaffold, arrivals, widget, board, stop search (+ preview), watchlist,
-alerts. Next: maintenance only.
+alerts, map. Next: maintenance only.
 Out of scope: GPS nearby, route map, timetable.

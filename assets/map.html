@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stasi map</title>
+<link rel="stylesheet" href="leaflet/leaflet.css">
+<link rel="stylesheet" href="leaflet/MarkerCluster.css">
+<link rel="stylesheet" href="leaflet/MarkerCluster.Default.css">
+<style>
+  html, body { height: 100%; margin: 0; padding: 0; }
+  #map { height: 100%; width: 100%; background: #101418; }
+  .stasi-popup { font-family: sans-serif; font-size: 13px; line-height: 1.35; }
+  .stasi-popup b { font-size: 14px; }
+  .stasi-popup .code { color: #555; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="leaflet/leaflet.js"></script>
+<script src="leaflet/leaflet.markercluster.js"></script>
+<script>
+(function () {
+  "use strict";
+  var SYNTAGMA = [37.9755, 23.7348];
+  var reducedMotion = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  var map = L.map("map", {
+    center: SYNTAGMA,
+    zoom: 13,
+    zoomAnimation: !reducedMotion,
+    fadeAnimation: !reducedMotion
+  });
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map);
+
+  var clusters = L.markerClusterGroup();
+  map.addLayer(clusters);
+  var byCode = {};
+  var lineLayer = null;
+
+  function popupHtml(code, descr) {
+    var name = descr || code;
+    return '<div class="stasi-popup"><b>' + escapeHtml(name) + '</b><br>' +
+      '<span class="code">Stop ' + escapeHtml(code) + '</span></div>';
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  // stops: [[code, lat, lng, descr], ...]. Replaces previous markers.
+  window.loadStops = function (stops) {
+    clusters.clearLayers();
+    byCode = {};
+    for (var i = 0; i < stops.length; i++) {
+      var s = stops[i];
+      (function (code, lat, lng, descr) {
+        var marker = L.marker([lat, lng]);
+        marker.bindPopup(popupHtml(code, descr));
+        marker.on("click", function () {
+          window.location.href = "stasi://stop/" + encodeURIComponent(code);
+        });
+        byCode[code] = marker;
+        clusters.addLayer(marker);
+      })(s[0], s[1], s[2], s[3]);
+    }
+    return stops.length;
+  };
+
+  window.focusStop = function (code, lat, lng) {
+    var key = String(code);
+    if (lat !== undefined && lng !== undefined) {
+      map.setView([lat, lng], Math.max(map.getZoom(), 16));
+    } else if (byCode[key]) {
+      map.setView(byCode[key].getLatLng(), Math.max(map.getZoom(), 16));
+      byCode[key].openPopup();
+      return true;
+    } else {
+      return false;
+    }
+    if (byCode[key]) byCode[key].openPopup();
+    window.location.href = "stasi://stop/" + encodeURIComponent(key);
+    return true;
+  };
+
+  // Highlight one line's stops; stops: [[code, lat, lng, descr], ...].
+  window.showLineStops = function (stops) {
+    window.clearLineStops();
+    var group = [];
+    for (var i = 0; i < stops.length; i++) {
+      var s = stops[i];
+      group.push(L.circleMarker([s[1], s[2]], {
+        radius: 7, color: "#b3541e", weight: 2, fillOpacity: 0.85
+      }).bindPopup(popupHtml(s[0], s[3])));
+    }
+    lineLayer = L.layerGroup(group);
+    map.addLayer(lineLayer);
+    if (group.length > 0) map.fitBounds(lineLayer.getBounds().pad(0.1));
+    return group.length;
+  };
+
+  window.clearLineStops = function () {
+    if (lineLayer) {
+      map.removeLayer(lineLayer);
+      lineLayer = null;
+    }
+  };
+
+  window.mapReady = true;
+})();
+</script>
+</body>
+</html>

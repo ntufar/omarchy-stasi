@@ -274,6 +274,13 @@ def shape_routes(raw_items):
     return [route for route in routes if route["route_code"]]
 
 
+def _clean_float(value):
+    try:
+        return float(_clean_str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def shape_catalog_stops(raw_items):
     """Normalize one webGetStops payload (OasaWebStopJson fields)."""
     stops = []
@@ -287,6 +294,8 @@ def shape_catalog_stops(raw_items):
             "stop_code": stop_code,
             "descr": _clean_str(item.get("StopDescr")),
             "descr_eng": _clean_str(item.get("StopDescrEng")),
+            "lat": _clean_float(item.get("StopLat")),
+            "lng": _clean_float(item.get("StopLng")),
         })
     return stops
 
@@ -358,6 +367,8 @@ def build_stop_index(force_refresh=False, progress=None):
                     "descr": stop["descr"],
                     "norm": greek.stop_search_norm(stop["stop_code"],
                                                    stop["descr"]),
+                    "lat": stop.get("lat"),
+                    "lng": stop.get("lng"),
                 })
         if progress is not None:
             progress(pos + 1, len(lines))
@@ -411,3 +422,57 @@ def search_stops(query, limit=SEARCH_LIMIT_DEFAULT, index=None):
     return [{"stop_code": _clean_str(stop.get("stop_code")),
              "descr": _clean_str(stop.get("descr"))}
             for stop in ranked[:max(0, limit)]]
+
+
+SEARCH_LINES_LIMIT_DEFAULT = 80
+
+
+def search_lines(query, limit=SEARCH_LINES_LIMIT_DEFAULT, lines=None):
+    """Port of OasaRepository.searchLines over the cached lines catalog."""
+    needle = greek.normalize_greek(
+        greek.expand_latin_query(query)).strip().replace("%", "").replace("_", "")
+    if len(needle) < SEARCH_MIN_CHARS:
+        return []
+    rows = lines if lines is not None else get_lines()
+    code_hits, sub_hits = [], []
+    for line in rows:
+        norm = greek.line_search_norm(line.get("line_id"), line.get("line_code"),
+                                      line.get("line_descr"))
+        code = _clean_str(line.get("line_id")) or _clean_str(line.get("line_code"))
+        if code.startswith(needle) or norm.startswith(needle):
+            code_hits.append(line)
+        elif needle in norm:
+            sub_hits.append(line)
+    return [{"line_code": _clean_str(line.get("line_code")),
+             "line_id": _clean_str(line.get("line_id")),
+             "line_descr": _clean_str(line.get("line_descr"))}
+            for line in (code_hits + sub_hits)[:max(0, limit)]]
+
+
+def line_stops(line_code, force_refresh=False):
+    """Routes + geo stops for one line (map overlay); catalog caches apply."""
+    line_code = _clean_str(line_code)
+    if not line_code:
+        raise ValueError("line code is required")
+    routes = []
+    for route in get_routes(line_code, force_refresh=force_refresh):
+        stops = [{"stop_code": s["stop_code"], "descr": s["descr"],
+                  "lat": s.get("lat"), "lng": s.get("lng")}
+                 for s in get_route_stops(route["route_code"],
+                                          force_refresh=force_refresh)]
+        routes.append({"route_code": route["route_code"],
+                       "route_descr": route["route_descr"], "stops": stops})
+    return {"line_code": line_code, "routes": routes}
+
+
+def stops_geo(index=None):
+    """All indexed stops with coordinates, for map markers."""
+    stops = index if index is not None else load_stop_index()
+    if stops is None:
+        raise RuntimeError("stop index missing; run stasi-client refresh-stops first")
+    return [{"stop_code": _clean_str(s.get("stop_code")),
+             "descr": _clean_str(s.get("descr")),
+             "lat": s.get("lat"), "lng": s.get("lng")}
+            for s in stops
+            if isinstance(s.get("lat"), (int, float))
+            and isinstance(s.get("lng"), (int, float))]

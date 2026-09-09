@@ -30,3 +30,8 @@ def normalize_greek(input_text):
 def stop_search_norm(stop_code, descr):
     return normalize_greek(" ".join(
         part for part in (stop_code, descr) if part and part.strip()))
+
+
+def line_search_norm(line_id, line_code, descr):
+    return normalize_greek(" ".join(
+        part for part in (line_id, line_code, descr) if part and part.strip()))

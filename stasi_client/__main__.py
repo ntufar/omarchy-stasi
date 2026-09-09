@@ -29,6 +29,26 @@ def cmd_alerts(args):
     sys.stdout.write("\n")
 
 
+def cmd_search_lines(args):
+    lines = oasa.search_lines(args.query, limit=args.limit)
+    json.dump({"query": args.query, "lines": lines}, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
+def cmd_line_stops(args):
+    payload = oasa.line_stops(args.line, force_refresh=args.force_refresh)
+    json.dump(payload, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
+def cmd_stops_geo(args):
+    stops = oasa.stops_geo()
+    if args.limit is not None:
+        stops = stops[:max(0, args.limit)]
+    json.dump({"stops": stops}, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
 def cmd_refresh_stops(args):
     def progress(done, total):
         sys.stderr.write("refresh-stops: line %d/%d\n" % (done, total))
@@ -63,6 +83,23 @@ def build_parser():
     alerts.add_argument("--force-refresh", action="store_true",
                         help="skip the ~20 s arrivals cache")
     alerts.set_defaults(func=cmd_alerts)
+    search_lines = sub.add_parser("search-lines", help="search bus lines")
+    search_lines.add_argument("query", help="line number, code or name")
+    search_lines.add_argument("--limit", type=int,
+                              default=oasa.SEARCH_LINES_LIMIT_DEFAULT,
+                              help="max results (default %(default)s)")
+    search_lines.set_defaults(func=cmd_search_lines)
+    line_stops = sub.add_parser("line-stops",
+                                help="routes + geo stops for one line (map overlay)")
+    line_stops.add_argument("--line", required=True, help="OASA line code")
+    line_stops.add_argument("--force-refresh", action="store_true",
+                            help="skip the ~24 h catalog caches")
+    line_stops.set_defaults(func=cmd_line_stops)
+    stops_geo = sub.add_parser("stops-geo",
+                               help="indexed stops with coordinates (map markers)")
+    stops_geo.add_argument("--limit", type=int, default=None,
+                           help="max stops (default all with coordinates)")
+    stops_geo.set_defaults(func=cmd_stops_geo)
     refresh = sub.add_parser("refresh-stops",
                              help="rebuild the stop-search index (slow first run)")
     refresh.add_argument("--full", action="store_true",

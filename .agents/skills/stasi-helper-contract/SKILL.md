@@ -48,6 +48,16 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
   `<=0` disables without fetching. Widget runs it after each arrivals fetch
   (shares the 20 s cache) and fires one `notify-send` summary per cycle;
   `alertThreshold` setting, `0` = off.
+- Map data: `search-lines <q>` (line id/code/name, limit 80),
+  `line-stops --line <code>` (routes + stops with lat/lng),
+  `stops-geo [--limit N]` (indexed stops with coordinates; errors with the
+  `refresh-stops` hint when the index was never built). Index entries carry
+  `lat`/`lng` since the coords rebuild — older indexes need
+  `refresh-stops --full` before markers appear.
+- Map bridge (`assets/map.html`, Leaflet vendored in `assets/leaflet/`):
+  QML→page only via `runJavaScript`; page→QML only via `stasi://stop/<code>`
+  navigation intercepted with `IgnoreRequest`. Never add another channel
+  without updating both sides and this contract.
 - Watchlist: `setting("stops", [])` (array; strings tolerated) with legacy
   `setting("stop", "")` fallback, normalized by `Model.parseStops`. `saveStops`
   writes `{id, ...settings, stops: [...]}` via `updateEntryInline` and clears

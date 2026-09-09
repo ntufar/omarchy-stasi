@@ -1,7 +1,8 @@
 # Stasi as an Omarchy Plugin — Architecture & Implementation Plan
 
-Status: phases 0–3 + stop search implemented and live-verified (2026-09-09).
-Remaining: watchlist/multiple-stop settings, alerts.
+Status: all phases implemented and live-verified (2026-09-09), plus a
+side-by-side Leaflet map (reverses the §2.3 no-map scope call per user request).
+Remaining: maintenance only.
 Date: 2026-09-09.
 
 ## 1. Verdict

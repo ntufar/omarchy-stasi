@@ -28,6 +28,8 @@ BarWidget {
 
   readonly property var widgetMetadata: bar && bar.barWidgetRegistry
     ? bar.barWidgetRegistry.metadataFor(moduleName) : null
+  readonly property string pluginRoot: widgetMetadata && widgetMetadata.sourceDir
+    ? String(widgetMetadata.sourceDir) : ""
   readonly property string helperPath: widgetMetadata && widgetMetadata.sourceDir
     ? String(widgetMetadata.sourceDir) + "/bin/stasi-client" : ""
   readonly property string displayText: Model.barLabel(
