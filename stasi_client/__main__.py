@@ -20,6 +20,15 @@ def cmd_search(args):
     sys.stdout.write("\n")
 
 
+def cmd_alerts(args):
+    notified = [k.strip() for k in (args.notified or "").split(",")]
+    result = oasa.alerts_due(args.stop, args.threshold,
+                             [k for k in notified if k],
+                             force_refresh=args.force_refresh)
+    json.dump(result, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
 def cmd_refresh_stops(args):
     def progress(done, total):
         sys.stderr.write("refresh-stops: line %d/%d\n" % (done, total))
@@ -44,6 +53,16 @@ def build_parser():
     search.add_argument("--limit", type=int, default=oasa.SEARCH_LIMIT_DEFAULT,
                         help="max results (default %(default)s)")
     search.set_defaults(func=cmd_search)
+    alerts = sub.add_parser("alerts", help="buses at/below a minute threshold")
+    alerts.add_argument("--stop", required=True, action="append",
+                        help="OASA stop code (repeat for a watchlist)")
+    alerts.add_argument("--threshold", required=True, type=int,
+                        help="notify at or below this many minutes (<=0 disables)")
+    alerts.add_argument("--notified", default="",
+                        help="comma-separated alert keys already fired for")
+    alerts.add_argument("--force-refresh", action="store_true",
+                        help="skip the ~20 s arrivals cache")
+    alerts.set_defaults(func=cmd_alerts)
     refresh = sub.add_parser("refresh-stops",
                              help="rebuild the stop-search index (slow first run)")
     refresh.add_argument("--full", action="store_true",

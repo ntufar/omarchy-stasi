@@ -18,6 +18,13 @@ BarWidget {
   property double fetchedAt: 0
   property string error: ""
   property int tick: 0
+  // Alert threshold in minutes, 0 = off. One summary notification per poll
+  // cycle at most; fired keys are remembered session-only (notifiedKeys).
+  readonly property int alertThreshold: {
+    var t = parseInt(setting("alertThreshold", 0), 10)
+    return isNaN(t) ? 0 : Math.max(0, t)
+  }
+  property var notifiedKeys: []
 
   readonly property var widgetMetadata: bar && bar.barWidgetRegistry
     ? bar.barWidgetRegistry.metadataFor(moduleName) : null
@@ -69,6 +76,40 @@ BarWidget {
     if (list.length !== stopList.length) saveStops(list)
   }
 
+  // Alert cycle: the helper reuses the ~20 s arrivals cache, so this second
+  // call costs no extra network. Firing stays best-effort and silent on error.
+  function maybeAlert() {
+    if (root.alertThreshold <= 0 || root.stopList.length === 0 || alertsProc.running) return
+    var cmd = [helperPath, "alerts", "--threshold", String(root.alertThreshold)]
+    for (var i = 0; i < stopList.length; i++) {
+      cmd.push("--stop")
+      cmd.push(stopList[i])
+    }
+    if (root.notifiedKeys.length > 0) {
+      cmd.push("--notified")
+      cmd.push(root.notifiedKeys.join(","))
+    }
+    alertsProc.command = cmd
+    alertsProc.running = true
+  }
+
+  function fireAlert(due, threshold) {
+    if (notifyProc.running) return
+    var lines = []
+    for (var i = 0; i < due.length && lines.length < 4; i++) {
+      var parts = []
+      if (due[i].line) parts.push(due[i].line)
+      if (due[i].destination) parts.push(due[i].destination)
+      parts.push(due[i].minutes === null || due[i].minutes === undefined ? "—" : due[i].minutes + "ʹ")
+      if (due[i].stop) parts.push("Στάση " + due[i].stop)
+      lines.push(parts.join(" · "))
+    }
+    if (due.length > lines.length) lines.push("+" + (due.length - lines.length) + " more")
+    notifyProc.command = ["notify-send", "--app-name", "Stasi",
+      "Stasi · ≤ " + threshold + "ʹ", lines.join("\n")]
+    notifyProc.running = true
+  }
+
   function handleResult(exitCode, text) {
     if (exitCode !== 0) {
       try {
@@ -89,6 +130,7 @@ BarWidget {
       root.stopSections = payload.stops || []
       root.fetchedAt = (payload.fetched_at || 0) * 1000
       root.error = ""
+      root.maybeAlert()
       if (root.arrivals.length === 0) {
         for (var i = 0; i < root.stopSections.length; i++) {
           if (root.stopSections[i].error) {
@@ -135,6 +177,7 @@ BarWidget {
     root.stopSections = []
     root.fetchedAt = 0
     root.error = ""
+    root.notifiedKeys = []
     root.refresh()
   }
   onHelperPathChanged: root.refresh()
@@ -146,6 +189,29 @@ BarWidget {
       waitForEnd: true
     }
     onExited: function(exitCode) { root.handleResult(exitCode, fetchOut.text) }
+  }
+
+  Process {
+    id: alertsProc
+    stdout: StdioCollector {
+      id: alertsOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      try {
+        var payload = JSON.parse(alertsOut.text)
+        root.notifiedKeys = (payload && payload.notified) || []
+        var due = (payload && payload.notify) || []
+        if (due.length > 0) root.fireAlert(due, payload.threshold)
+      } catch (e) {
+        // Best-effort: a malformed alerts reply must not break the widget.
+      }
+    }
+  }
+
+  Process {
+    id: notifyProc
   }
 
   Timer {

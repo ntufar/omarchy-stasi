@@ -180,6 +180,48 @@ def get_stops_arrivals(stop_codes, force_refresh=False):
             "cached": bool(sections) and all(s.get("cached") for s in sections)}
 
 
+def alert_key(stop_code, arrival):
+    """Stable identity for one board row: vehicle when known, else line+dest."""
+    veh = _clean_str(arrival.get("veh_code"))
+    if veh:
+        return "%s#%s" % (stop_code, veh)
+    line = _clean_str(arrival.get("line") or arrival.get("line_code"))
+    dest = _clean_str(arrival.get("destination") or arrival.get("route_descr"))
+    return "%s#%s#%s" % (stop_code, line, dest)
+
+
+def alerts_due(stop_codes, threshold_minutes, notified_keys=(), force_refresh=False):
+    """Buses at/below threshold that were not already notified.
+
+    Single source of truth for the QML alert cycle: QML passes the keys it
+    already fired for, gets back {"threshold", "notify", "notified"}. Keys
+    that left the board are forgotten so a later bus can notify again.
+    threshold <= 0 disables (no fetch). Minutes are snapshot values; the
+    alerts call runs right after the arrivals fetch in the same cycle.
+    """
+    try:
+        threshold = int(threshold_minutes)
+    except (TypeError, ValueError):
+        threshold = 0
+    notified = set(notified_keys or [])
+    if threshold <= 0:
+        return {"threshold": 0, "notify": [], "notified": sorted(notified)}
+    payload = get_stops_arrivals(stop_codes, force_refresh=force_refresh)
+    board_keys = set()
+    due = []
+    for arrival in payload["arrivals"]:
+        key = alert_key(arrival.get("stop") or "", arrival)
+        board_keys.add(key)
+        minutes = arrival.get("minutes")
+        if minutes is None:
+            continue
+        if minutes <= threshold and key not in notified:
+            due.append(arrival)
+    kept = sorted((notified | {alert_key(a.get("stop") or "", a) for a in due})
+                  & board_keys)
+    return {"threshold": threshold, "notify": due, "notified": kept}
+
+
 def _read_json_cache(name, ttl_seconds):
     """Return cached JSON payload, or None when missing/stale/unreadable."""
     try:

@@ -128,11 +128,12 @@ not look stuck when OASA repeats an ETA.
   normalization port (done 2026-09-09: `stasi-client search`, cached
   `stops_index.json` via `refresh-stops`, panel search field + tap-to-preview).
   Acceptance: Greeklish query `syntagma` finds ΣΥΝΤΑΓΜΑ (verified live).
-- [ ] **Phase 5 — alerts + polish (optional, 1–2 days).** Threshold setting +
-  desktop notification on ≤ threshold minutes; icon asset; theme-aware colors via
-  `qs.Commons`/`qs.Ui` (`Style`, `Color`); README with install commands.
-  Acceptance: `omarchy plugin validate` green, README install works from clean
-  `git clone`.
+- [x] **Phase 5 — alerts (1 day).** `alertThreshold` setting (0 = off) +
+  `stasi-client alerts` transition check after each poll, one `notify-send`
+  summary per cycle, no repeats while the bus stays on the board.
+  Acceptance: `omarchy plugin validate` green (verified).
+- [ ] **Polish (optional).** README install from clean `git clone`; icon asset
+  review; theme check after each `omarchy update` (Quickshell API drift).
 
 Total estimate: **~1 week** for phases 0–4, plus 1–2 days for phase 5.
 

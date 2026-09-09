@@ -72,6 +72,6 @@ ln -sfn /usr/share/omarchy/shell/Commons /usr/share/omarchy/shell/Ui /tmp/qmlimp
 
 ## Roadmap (from docs/OMARCHY_PLUGIN.md)
 
-Done: scaffold, arrivals, widget, board, stop search (+ preview), watchlist.
-Next: arrival alerts.
+Done: scaffold, arrivals, widget, board, stop search (+ preview), watchlist,
+alerts. Next: maintenance only.
 Out of scope: GPS nearby, route map, timetable.

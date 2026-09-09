@@ -43,6 +43,11 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
 - Fetch pattern: `Process` + `StdioCollector { waitForEnd: true }`, parse in
   `onExited`, guard with `proc.running` before starting. Helper path:
   `bar.barWidgetRegistry.metadataFor(moduleName).sourceDir + "/bin/stasi-client"`.
+- `alerts --stop ... --threshold N [--notified k,...]` → `{"threshold",
+  "notify" (due, unfired arrivals), "notified" (updated fired-key set)}`;
+  `<=0` disables without fetching. Widget runs it after each arrivals fetch
+  (shares the 20 s cache) and fires one `notify-send` summary per cycle;
+  `alertThreshold` setting, `0` = off.
 - Watchlist: `setting("stops", [])` (array; strings tolerated) with legacy
   `setting("stop", "")` fallback, normalized by `Model.parseStops`. `saveStops`
   writes `{id, ...settings, stops: [...]}` via `updateEntryInline` and clears

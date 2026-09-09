@@ -27,6 +27,14 @@ each stop with its next arrival (tap to preview, ✕ to unwatch). You can also
 watch a stop from the panel: search, then ＋ Watch. A legacy single
 `stop` key still works and merges into the list.
 
+```bash
+# Arrival alerts: notify when a bus is at/below N minutes (0 = off)
+omarchy bar set io.github.ntufar.stasi alertThreshold 5
+```
+
+At most one summary notification per 30 s poll (via `notify-send`); a bus
+that already fired is not repeated until it leaves the board and comes back.
+
 ## Layout
 
 ```
