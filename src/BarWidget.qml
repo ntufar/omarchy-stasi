@@ -26,10 +26,14 @@ BarWidget {
   }
   property var notifiedKeys: []
 
-  readonly property var widgetMetadata: bar && bar.barWidgetRegistry
-    ? bar.barWidgetRegistry.metadataFor(moduleName) : null
-  readonly property string helperPath: widgetMetadata && widgetMetadata.sourceDir
-    ? String(widgetMetadata.sourceDir) + "/bin/stasi-client" : ""
+  // `bar.barWidgetRegistry` used to carry the plugin's sourceDir, but the
+  // PluginBarApi facade given to third-party widgets never exposed it (see
+  // Ui/PluginBarApi.qml) — helperPath silently stayed "" forever and every
+  // helper call (arrivals, search, map tiles, ...) no-opped. Resolve our own
+  // install path instead: this file always loads from <pluginRoot>/src/, so
+  // a URL relative to it needs no host cooperation at all.
+  readonly property string helperPath: decodeURIComponent(
+    String(Qt.resolvedUrl("../bin/stasi-client")).replace(/^file:\/\//, ""))
   readonly property string displayText: Model.barLabel(
     stopList.length > 0 ? stopList.join(" ") : "", arrivals, fetchedAt, tick, error)
   readonly property string tooltip: stopList.length === 0

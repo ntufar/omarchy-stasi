@@ -41,8 +41,14 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
 ## QML wiring (`src/`)
 
 - Fetch pattern: `Process` + `StdioCollector { waitForEnd: true }`, parse in
-  `onExited`, guard with `proc.running` before starting. Helper path:
-  `bar.barWidgetRegistry.metadataFor(moduleName).sourceDir + "/bin/stasi-client"`.
+  `onExited`, guard with `proc.running` before starting. Helper path: resolved
+  from `BarWidget.qml`'s own file location — `Qt.resolvedUrl("../bin/stasi-client")`
+  with the `file://` scheme stripped and percent-encoding decoded. Do **not**
+  go back to `bar.barWidgetRegistry.metadataFor(moduleName).sourceDir`: the
+  `PluginBarApi` facade given to third-party bar widgets never exposes
+  `barWidgetRegistry` (see `Ui/PluginBarApi.qml` in the Omarchy shell), so
+  that lookup silently returns `""` forever and every helper call — arrivals,
+  search, map tiles — no-ops with no error anywhere.
 - `alerts --stop ... --threshold N [--notified k,...]` → `{"threshold",
   "notify" (due, unfired arrivals), "notified" (updated fired-key set)}`;
   `<=0` disables without fetching. Widget runs it after each arrivals fetch

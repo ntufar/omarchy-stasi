@@ -158,6 +158,21 @@ Panel {
     root.loadMapMarkers()
   }
 
+  // hostWidget.helperPath can still be "" right when the panel opens (the
+  // bar widget registry populates it asynchronously on shell startup), so
+  // the calls above silently no-op. Retry everything once it lands instead
+  // of leaving the map blank and stale "helper unavailable" text on screen.
+  readonly property string helperPath: hostWidget ? hostWidget.helperPath : ""
+  onHelperPathChanged: {
+    if (helperPath === "") return
+    root.updateTiles()
+    root.loadMapMarkers()
+    if (root.searchError === "helper unavailable") root.runSearch(searchField.text)
+    if (root.lineError === "helper unavailable") root.runLineSearch(searchField.text)
+    if (root.previewError === "helper unavailable" && root.previewCode !== "")
+      root.previewStop(root.previewCode, root.previewDescr)
+  }
+
   function updateTiles() {
     var n = Math.pow(2, mapZoom)
     var cx = Model.lonToTileX(mapLng, mapZoom)
@@ -967,6 +982,7 @@ Panel {
         id: mapView
         width: 440
         height: 520
+        clip: true
 
         MouseArea {
           id: mapPan
