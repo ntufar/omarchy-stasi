@@ -63,13 +63,31 @@ The QML shell and the Python helper meet at one boundary: `bin/stasi-client`
 - Map data feeds a pure-QML tile map (no WebEngine — it crash-loops the
   shell, see AGENTS.md). Stop dots come from `stops-geo`, line overlays from
   `line-stops`; all projection math lives in `Model.js` (slippy formulas).
-- `map-tiles --tile z/x/y [--tile ...] [--force-refresh]` → `{"tiles":
-  [{"z","x","y","path"} or {"z","x","y","error"}]}`. Fetches OSM raster
-  tiles with `oasa.USER_AGENT` and disk-caches them
+  `overlayGeo` is an array of routes (each an ordered stop array), not a
+  flat list — `updateMarkers` draws one `Shape`/`PathPolyline` per route
+  under the stop dots, and flattening it back loses that grouping and lets
+  the line jump between two different directions' stops.
+- `map-tiles --tile z/x/y [--tile ...] --style light|dark [--force-refresh]`
+  → `{"tiles": [{"z","x","y","style","path"} or {"z","x","y","error"}]}`.
+  Fetches OSM raster tiles with `oasa.USER_AGENT` and disk-caches them
   (`stasi_client/tiles.py`) — required because `tile.openstreetmap.org`
   418-blocks requests with no identifying User-Agent (osm.wiki/Blocked).
   Never point `Image.source` at the remote tile URL; `Panel.qml` always
-  batches through this and uses the returned `file://` path.
+  batches through this and uses the returned `file://` path. `--style dark`
+  fetches the same OSM tile and inverts its palette lightness locally
+  (`tiles.darken_tile`) rather than hitting a separate dark basemap
+  provider — every free one tried (CARTO's basemaps.cartocdn.com included)
+  now demands an API key for anonymous raster requests and stamps a
+  watermark over the tile instead. `Panel.qml` picks light vs. dark from
+  the popup background's luma (`root.mapDark`) and keys its in-memory tile
+  cache by `z/x/y:style` so the two styles never collide.
+- Panel layout is tabbed (`root.activeTab`, "board" | "map"), not the old
+  permanent side-by-side split — a fixed 50/50 pane read as a hard wall
+  down the panel and left each side too narrow. `previewStop` switches to
+  "board", `showLineOverlay` switches to "map"; `mapViewWidth` is bound to
+  the rendered `mapCol.width`, not a second copy of the panel's content-area
+  math, so the tile canvas can't silently drift out of sync with it and
+  overflow the panel's edge.
 - Watchlist: `setting("stops", [])` (array; strings tolerated) with legacy
   `setting("stop", "")` fallback, normalized by `Model.parseStops`. `saveStops`
   writes `{id, ...settings, stops: [...]}` via `updateEntryInline` and clears

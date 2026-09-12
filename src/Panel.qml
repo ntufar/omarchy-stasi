@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls as QQC
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -46,7 +47,12 @@ Panel {
   property double previewFetchedAt: 0
   property string previewError: ""
 
-  // ---- Map state (side-by-side Leaflet view, Syntagma-centered) ----
+  // ---- Board vs. map tab (was a permanent side-by-side split; a fixed
+  // 50/50 pane read as a hard wall down the middle of the panel, and
+  // whichever pane won the panel's width was always too narrow) ----
+  property string activeTab: "board"
+
+  // ---- Map state (Syntagma-centered tile view) ----
   property string linePending: ""
   property var lineResults: []
   property string lineError: ""
@@ -61,6 +67,24 @@ Panel {
   // (osm.wiki/Blocked) requires an identifying User-Agent and local
   // caching, so every tile goes through `stasi-client map-tiles` (proper
   // UA + disk cache) and Image only ever loads the cached file:// result.
+  readonly property real panelWidth: 480
+  // Bound to the actual rendered column width (mapCol, declared further
+  // down) rather than a second hand-maintained copy of contentRoot's inner
+  // width math -- a mismatch there is exactly what overflowed the tile
+  // canvas past the panel's own right edge earlier in review.
+  readonly property real mapViewWidth: mapCol.width
+  readonly property real mapViewHeight: 520
+  // OSM's own raster tiles are only ever styled light; a dark shell theme
+  // gets the same tiles with their palette lightness-inverted in the
+  // helper (stasi_client.tiles.darken_tile) — every free *hosted* dark
+  // basemap we tried demands an API key for anonymous raster tiles now.
+  // Luma of the popup background (not a "system dark mode" flag Omarchy
+  // doesn't have, since any theme's colors.toml can pick arbitrary
+  // background/foreground) decides which one this theme reads as.
+  readonly property real _bgLuma: 0.299 * Color.popups.background.r
+    + 0.587 * Color.popups.background.g + 0.114 * Color.popups.background.b
+  readonly property bool mapDark: _bgLuma < 0.5
+  readonly property string mapStyle: mapDark ? "dark" : "light"
   property real mapLat: 37.9755
   property real mapLng: 23.7348
   property int mapZoom: 13
@@ -68,8 +92,12 @@ Panel {
   property var tileCache: ({})
   property var tileQueue: []
   property var visibleStops: []
+  // Array of routes, each an array of {stop_code, descr, lat, lng} in
+  // travel order — kept grouped (not flattened) so the route line drawn
+  // between them never jumps between two different directions' stops.
   property var overlayGeo: []
   property var overlayStops: []
+  property var overlayRoutePaths: []
 
   readonly property bool previewing: root.previewCode !== ""
   readonly property var shownArrivals: root.previewing ? root.previewArrivals : root.arrivals
@@ -102,6 +130,7 @@ Panel {
   }
 
   function previewStop(code, descr) {
+    root.activeTab = "board"
     root.previewCode = code
     root.previewDescr = descr || ""
     root.previewArrivals = []
@@ -174,23 +203,24 @@ Panel {
   }
 
   function updateTiles() {
+    var halfW = root.mapViewWidth / 2, halfH = root.mapViewHeight / 2
     var n = Math.pow(2, mapZoom)
     var cx = Model.lonToTileX(mapLng, mapZoom)
     var cy = Model.latToTileY(mapLat, mapZoom)
-    var x0 = Math.floor(cx - 220 / 256), x1 = Math.floor(cx + 220 / 256)
-    var y0 = Math.floor(cy - 260 / 256), y1 = Math.floor(cy + 260 / 256)
+    var x0 = Math.floor(cx - halfW / 256), x1 = Math.floor(cx + halfW / 256)
+    var y0 = Math.floor(cy - halfH / 256), y1 = Math.floor(cy + halfH / 256)
     var tiles = []
     for (var x = x0; x <= x1; x++) {
       for (var y = y0; y <= y1; y++) {
         if (y < 0 || y >= n) continue
         var wx = ((x % n) + n) % n
-        var key = mapZoom + "/" + wx + "/" + y
+        var key = mapZoom + "/" + wx + "/" + y + ":" + root.mapStyle
         var path = root.tileCache[key] || ""
         if (path === "") root.queueTileFetch(key)
         tiles.push({
           path: path,
-          px: (x - cx) * 256 + 220,
-          py: (y - cy) * 256 + 260
+          px: (x - cx) * 256 + halfW,
+          py: (y - cy) * 256 + halfH
         })
       }
     }
@@ -216,27 +246,51 @@ Panel {
     var args = [hostWidget.helperPath, "map-tiles"]
     for (var i = 0; i < batch.length; i++) {
       args.push("--tile")
-      args.push(batch[i])
+      // Keys carry a ":<style>" suffix (see updateTiles) to keep light/dark
+      // cache entries apart; the helper only wants the bare z/x/y ref.
+      args.push(batch[i].split(":")[0])
     }
+    args.push("--style")
+    args.push(root.mapStyle)
     tileProc.command = args
     tileProc.running = true
   }
 
   function projectStops(list) {
     var out = []
+    var w = root.mapViewWidth, h = root.mapViewHeight
     for (var i = 0; i < list.length && out.length < 500; i++) {
       var s = list[i]
       if (s.lat === null || s.lat === undefined || s.lng === null || s.lng === undefined) continue
-      var p = Model.geoToPixel(s.lat, s.lng, mapLat, mapLng, mapZoom, 440, 520)
-      if (p.x < -10 || p.x > 450 || p.y < -10 || p.y > 530) continue
+      var p = Model.geoToPixel(s.lat, s.lng, mapLat, mapLng, mapZoom, w, h)
+      if (p.x < -10 || p.x > w + 10 || p.y < -10 || p.y > h + 10) continue
       out.push({ code: s.stop_code, descr: s.descr, px: p.x, py: p.y })
     }
     return out
   }
 
+  // overlayGeo is an array of routes (each an ordered array of stops, see
+  // its declaration) so the connecting line for each direction only ever
+  // links stops that actually belong to it.
   function updateMarkers() {
     root.visibleStops = projectStops(geoCache)
-    root.overlayStops = projectStops(overlayGeo)
+    var flat = []
+    var paths = []
+    for (var r = 0; r < root.overlayGeo.length; r++) {
+      var routeStops = root.overlayGeo[r]
+      var path = []
+      for (var i = 0; i < routeStops.length; i++) {
+        var s = routeStops[i]
+        if (s.lat === null || s.lat === undefined || s.lng === null || s.lng === undefined) continue
+        var p = Model.geoToPixel(s.lat, s.lng, mapLat, mapLng, mapZoom,
+          root.mapViewWidth, root.mapViewHeight)
+        path.push(p)
+        flat.push({ code: s.stop_code, descr: s.descr, px: p.x, py: p.y })
+      }
+      if (path.length > 1) paths.push(path)
+    }
+    root.overlayStops = flat
+    root.overlayRoutePaths = paths
   }
 
   function panMapBy(dx, dy) {
@@ -299,6 +353,7 @@ Panel {
 
   function showLineOverlay(lineCode, lineDescr) {
     if (!hostWidget || !hostWidget.helperPath || lineProc.running) return
+    root.activeTab = "map"
     root.overlayLine = lineCode
     root.overlayDescr = lineDescr || ""
     lineProc.command = [hostWidget.helperPath, "line-stops", "--line", lineCode]
@@ -310,6 +365,7 @@ Panel {
     root.overlayDescr = ""
     root.overlayGeo = []
     root.overlayStops = []
+    root.overlayRoutePaths = []
   }
 
   Process {
@@ -409,7 +465,8 @@ Panel {
           var cache = Object.assign({}, root.tileCache)
           for (var i = 0; i < results.length; i++) {
             var t = results[i]
-            if (t && t.path) cache[t.z + "/" + t.x + "/" + t.y] = "file://" + t.path
+            if (t && t.path)
+              cache[t.z + "/" + t.x + "/" + t.y + ":" + (t.style || "light")] = "file://" + t.path
           }
           root.tileCache = cache
         } catch (e) {
@@ -497,24 +554,22 @@ Panel {
       }
       try {
         var payload = JSON.parse(lineOut.text)
-        var geo = []
         var routes = (payload && payload.routes) || []
-        for (var r = 0; r < routes.length; r++) {
-          var stops = routes[r].stops || []
-          for (var i = 0; i < stops.length; i++) {
-            geo.push(stops[i])
-          }
-        }
+        var geo = []
+        for (var r = 0; r < routes.length; r++) geo.push(routes[r].stops || [])
         root.overlayGeo = geo
         var lat0 = 90, lng0 = 180, lat1 = -90, lng1 = -180
         var found = false
-        for (var i = 0; i < geo.length; i++) {
-          if (geo[i].lat === null || geo[i].lat === undefined) continue
-          found = true
-          lat0 = Math.min(lat0, geo[i].lat)
-          lat1 = Math.max(lat1, geo[i].lat)
-          lng0 = Math.min(lng0, geo[i].lng)
-          lng1 = Math.max(lng1, geo[i].lng)
+        for (var r2 = 0; r2 < geo.length; r2++) {
+          for (var i = 0; i < geo[r2].length; i++) {
+            var gs = geo[r2][i]
+            if (gs.lat === null || gs.lat === undefined) continue
+            found = true
+            lat0 = Math.min(lat0, gs.lat)
+            lat1 = Math.max(lat1, gs.lat)
+            lng0 = Math.min(lng0, gs.lng)
+            lng1 = Math.max(lng1, gs.lng)
+          }
         }
         if (found) {
           mapLat = (lat0 + lat1) / 2
@@ -538,8 +593,11 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(880)
-    contentHeight: panel.fittedContentHeight(Math.max(board.implicitHeight, 600) + 24)
+    // One tab full-width at a time instead of two fixed-width panes
+    // permanently side by side (that read as a wall down the panel's
+    // middle, and left each pane too narrow for its own content).
+    contentWidth: panel.fittedContentWidth(root.panelWidth)
+    contentHeight: panel.fittedContentHeight(Math.max(contentRoot.implicitHeight, 600) + 24)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -551,553 +609,633 @@ Panel {
     }
 
     Column {
-      id: board
+      id: contentRoot
       anchors.left: parent.left
       anchors.top: parent.top
-      anchors.bottom: parent.bottom
       anchors.margins: 12
-      width: 400
-      spacing: 8
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        font.family: root.contentFontFamily
-        font.bold: true
-        font.pixelSize: 16
-        text: root.shownTitle
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.8
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        font.underline: true
-        text: "← " + (root.previewCode !== "" ? root.previewCode + " · " : "") + "Watchlist"
-        visible: root.previewing
-
-        MouseArea {
-          anchors.fill: parent
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.clearPreview()
-        }
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.8
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        font.underline: true
-        text: "+ Watch " + root.previewCode
-        visible: root.previewing && root.watchList.indexOf(root.previewCode) === -1
-
-        MouseArea {
-          anchors.fill: parent
-          cursorShape: Qt.PointingHandCursor
-          onClicked: {
-            if (root.hostWidget) root.hostWidget.watchStop(root.previewCode)
-          }
-        }
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        text: root.shownError !== "" ? root.shownError : Model.formatAge(root.shownFetchedAt, root.tick)
-        visible: text !== ""
-      }
-
-      Repeater {
-        model: root.shownArrivals
-
-        Text {
-          required property var modelData
-          width: board.width
-          color: root.contentForeground
-          font.family: root.contentFontFamily
-          font.pixelSize: 20
-          font.bold: true
-          wrapMode: Text.WordWrap
-          text: Model.rowLabel(modelData, root.shownFetchedAt, root.tick)
-        }
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        wrapMode: Text.WordWrap
-        text: root.watchList.length === 0 && !root.previewing
-          ? "Search for a stop below, or: omarchy bar set io.github.ntufar.stasi stops <code1,code2>"
-          : (root.shownArrivals.length === 0 && root.shownError === "" ? "No live arrivals." : "")
-        visible: text !== ""
-      }
-
-      Repeater {
-        model: (!root.previewing && root.watchList.length > 1) ? root.stopSections : []
-
-        Item {
-          required property var modelData
-          width: board.width
-          implicitHeight: watchCol.implicitHeight
-
-          Column {
-            id: watchCol
-            width: parent.width - 28
-            spacing: 0
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: 14
-              font.bold: true
-              wrapMode: Text.WordWrap
-              text: "Στάση " + modelData.stop
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.previewStop(modelData.stop, "")
-                  root.focusStopOnMap(modelData.stop)
-                }
-              }
-            }
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              opacity: 0.6
-              font.family: root.contentFontFamily
-              font.pixelSize: 12
-              wrapMode: Text.WordWrap
-              text: modelData.error ? String(modelData.error)
-                : (modelData.arrivals && modelData.arrivals.length > 0
-                  ? Model.rowLabel(modelData.arrivals[0], (modelData.fetched_at || 0) * 1000, root.tick)
-                  : "—")
-            }
-          }
-
-          Text {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            color: root.contentForeground
-            opacity: 0.6
-            font.family: root.contentFontFamily
-            font.pixelSize: 14
-            text: "✕"
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (root.hostWidget) root.hostWidget.unwatchStop(modelData.stop)
-              }
-            }
-          }
-        }
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.8
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        font.underline: true
-        text: "Refresh now"
-
-        MouseArea {
-          anchors.fill: parent
-          cursorShape: Qt.PointingHandCursor
-          onClicked: {
-            if (root.previewing) root.previewStop(root.previewCode, root.previewDescr)
-            else if (root.hostWidget) root.hostWidget.refresh()
-          }
-        }
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        font.family: root.contentFontFamily
-        font.bold: true
-        font.pixelSize: 14
-        text: "Search stops"
-      }
-
-      QQC.TextField {
-        id: searchField
-        width: parent.width
-        placeholderText: "συνταγμα / syntagma / 060123"
-        font.family: root.contentFontFamily
-        font.pixelSize: 14
-        color: root.contentForeground
-        background: Rectangle {
-          color: "transparent"
-          border.color: root.contentForeground
-          border.width: 1
-          opacity: 0.35
-          radius: 6
-        }
-        onTextChanged: searchDebounce.restart()
-        Keys.onEscapePressed: root.close()
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        text: "Searching…"
-        visible: root.searching
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        wrapMode: Text.WordWrap
-        text: root.searchError
-        visible: root.searchError !== ""
-      }
-
-      Repeater {
-        model: root.searchResults
-
-        Item {
-          required property var modelData
-          width: board.width
-          implicitHeight: rowCol.implicitHeight
-
-          Column {
-            id: rowCol
-            width: parent.width
-            spacing: 0
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: 14
-              font.bold: true
-              wrapMode: Text.WordWrap
-              text: modelData.descr || modelData.stop_code
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.previewStop(modelData.stop_code, modelData.descr || "")
-                  root.focusStopOnMap(modelData.stop_code)
-                }
-              }
-            }
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              opacity: 0.6
-              font.family: root.contentFontFamily
-              font.pixelSize: 12
-              text: "Στάση " + modelData.stop_code
-            }
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              opacity: 0.8
-              font.family: root.contentFontFamily
-              font.pixelSize: 12
-              font.underline: true
-              text: "＋ Watch"
-              visible: root.watchList.indexOf(modelData.stop_code) === -1
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (root.hostWidget) root.hostWidget.watchStop(modelData.stop_code)
-                }
-              }
-            }
-          }
-        }
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        font.family: root.contentFontFamily
-        font.bold: true
-        font.pixelSize: 14
-        text: "Lines"
-        visible: root.lineResults.length > 0 || root.searchingLines
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        text: "Searching lines…"
-        visible: root.searchingLines
-      }
-
-      Text {
-        width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        wrapMode: Text.WordWrap
-        text: root.lineError
-        visible: root.lineError !== ""
-      }
-
-      Repeater {
-        model: root.lineResults
-
-        Item {
-          required property var modelData
-          width: board.width
-          implicitHeight: lineRow.implicitHeight
-
-          Column {
-            id: lineRow
-            width: parent.width
-            spacing: 0
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: 14
-              font.bold: true
-              wrapMode: Text.WordWrap
-              text: "Line " + (modelData.line_id || modelData.line_code)
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.showLineOverlay(modelData.line_code,
-                  (modelData.line_id || modelData.line_code) + " · " + (modelData.line_descr || ""))
-              }
-            }
-
-            Text {
-              width: parent.width
-              color: root.contentForeground
-              opacity: 0.6
-              font.family: root.contentFontFamily
-              font.pixelSize: 12
-              wrapMode: Text.WordWrap
-              text: modelData.line_descr || ""
-              visible: (modelData.line_descr || "") !== ""
-            }
-          }
-        }
-      }
-    }
-
-    Column {
-      id: mapCol
-      anchors.right: parent.right
-      anchors.top: parent.top
-      anchors.bottom: parent.bottom
-      anchors.margins: 12
-      width: 440
-      spacing: 8
+      width: parent.width - 24
+      spacing: 10
 
       Row {
+        id: tabBar
         width: parent.width
-        spacing: 16
+        spacing: 20
 
         Text {
           color: root.contentForeground
+          opacity: root.activeTab === "board" ? 1.0 : 0.55
           font.family: root.contentFontFamily
+          font.bold: root.activeTab === "board"
+          font.underline: true
           font.pixelSize: 14
-          font.bold: true
-          text: "＋"
+          text: "Board"
 
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.zoomMap(1)
+            onClicked: root.activeTab = "board"
           }
         }
 
         Text {
           color: root.contentForeground
+          opacity: root.activeTab === "map" ? 1.0 : 0.55
           font.family: root.contentFontFamily
+          font.bold: root.activeTab === "map"
+          font.underline: true
           font.pixelSize: 14
-          font.bold: true
-          text: "－"
+          text: "Map"
 
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.zoomMap(-1)
+            onClicked: root.activeTab = "map"
           }
+        }
+      }
+
+      Column {
+        id: board
+        visible: root.activeTab === "board"
+        width: parent.width
+        spacing: 8
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.bold: true
+          font.pixelSize: 16
+          text: root.shownTitle
         }
 
         Text {
+          width: parent.width
           color: root.contentForeground
+          opacity: 0.8
           font.family: root.contentFontFamily
           font.pixelSize: 12
           font.underline: true
-          text: "⌖ Syntagma"
+          text: "← " + (root.previewCode !== "" ? root.previewCode + " · " : "") + "Watchlist"
+          visible: root.previewing
 
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.recenterSyntagma()
+            onClicked: root.clearPreview()
           }
         }
 
         Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.8
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          font.underline: true
+          text: "+ Watch " + root.previewCode
+          visible: root.previewing && root.watchList.indexOf(root.previewCode) === -1
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (root.hostWidget) root.hostWidget.watchStop(root.previewCode)
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
           color: root.contentForeground
           opacity: 0.6
           font.family: root.contentFontFamily
           font.pixelSize: 12
-          text: "drag to pan · scroll to zoom · tap a dot"
+          text: root.shownError !== "" ? root.shownError : Model.formatAge(root.shownFetchedAt, root.tick)
+          visible: text !== ""
         }
-      }
 
-      Item {
-        id: mapView
-        width: 440
-        height: 520
-        clip: true
+        Repeater {
+          model: root.shownArrivals
 
-        MouseArea {
-          id: mapPan
-          anchors.fill: parent
-          property real pressX: 0
-          property real pressY: 0
-          property bool panning: false
-          onPressed: function(e) {
-            pressX = e.x
-            pressY = e.y
-            panning = false
+          Text {
+            required property var modelData
+            width: board.width
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: 20
+            font.bold: true
+            wrapMode: Text.WordWrap
+            text: Model.rowLabel(modelData, root.shownFetchedAt, root.tick)
           }
-          onPositionChanged: function(e) {
-            if (!pressed) return
-            if (!panning && Math.hypot(e.x - pressX, e.y - pressY) < 4) return
-            panning = true
-            root.panMapBy(pressX - e.x, pressY - e.y)
-            pressX = e.x
-            pressY = e.y
-          }
-          onReleased: function(e) {
-            if (panning) {
-              panning = false
-              root.updateMarkers()
-            } else {
-              root.tapMapAt(e.x, e.y)
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          wrapMode: Text.WordWrap
+          text: root.watchList.length === 0 && !root.previewing
+            ? "Search for a stop below, or: omarchy bar set io.github.ntufar.stasi stops <code1,code2>"
+            : (root.shownArrivals.length === 0 && root.shownError === "" ? "No live arrivals." : "")
+          visible: text !== ""
+        }
+
+        Repeater {
+          model: (!root.previewing && root.watchList.length > 1) ? root.stopSections : []
+
+          Item {
+            required property var modelData
+            width: board.width
+            implicitHeight: watchCol.implicitHeight
+
+            Column {
+              id: watchCol
+              width: parent.width - 28
+              spacing: 0
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: 14
+                font.bold: true
+                wrapMode: Text.WordWrap
+                text: "Στάση " + modelData.stop
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.previewStop(modelData.stop, "")
+                    root.focusStopOnMap(modelData.stop)
+                  }
+                }
+              }
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                opacity: 0.6
+                font.family: root.contentFontFamily
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                text: modelData.error ? String(modelData.error)
+                  : (modelData.arrivals && modelData.arrivals.length > 0
+                    ? Model.rowLabel(modelData.arrivals[0], (modelData.fetched_at || 0) * 1000, root.tick)
+                    : "—")
+              }
+            }
+
+            Text {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              color: root.contentForeground
+              opacity: 0.6
+              font.family: root.contentFontFamily
+              font.pixelSize: 14
+              text: "✕"
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.hostWidget) root.hostWidget.unwatchStop(modelData.stop)
+                }
+              }
             }
           }
-          onWheel: function(w) {
-            if (w.angleDelta.y > 0) root.zoomMap(1)
-            else root.zoomMap(-1)
-          }
         }
 
-        Repeater {
-          model: root.mapTiles
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.8
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          font.underline: true
+          text: "Refresh now"
 
-          Image {
-            required property var modelData
-            x: modelData.px
-            y: modelData.py
-            width: 256
-            height: 256
-            source: modelData.path
-            asynchronous: true
-          }
-        }
-
-        Repeater {
-          model: root.overlayStops
-
-          Rectangle {
-            required property var modelData
-            x: modelData.px - 7
-            y: modelData.py - 7
-            width: 14
-            height: 14
-            radius: 7
-            color: "#b3541e"
-            border.color: "white"
-            border.width: 2
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.previewStop(modelData.code, "")
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (root.previewing) root.previewStop(root.previewCode, root.previewDescr)
+              else if (root.hostWidget) root.hostWidget.refresh()
             }
           }
         }
 
-        Repeater {
-          model: root.visibleStops
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.bold: true
+          font.pixelSize: 14
+          text: "Search stops"
+        }
 
-          Rectangle {
-            required property var modelData
-            x: modelData.px - 5
-            y: modelData.py - 5
-            width: 10
-            height: 10
-            radius: 5
-            color: "white"
-            border.color: "#333333"
+        QQC.TextField {
+          id: searchField
+          width: parent.width
+          placeholderText: "συνταγμα / syntagma / 060123"
+          font.family: root.contentFontFamily
+          font.pixelSize: 14
+          color: root.contentForeground
+          background: Rectangle {
+            color: "transparent"
+            border.color: root.contentForeground
             border.width: 1
-            visible: root.overlayStops.length === 0
+            opacity: 0.35
+            radius: 6
+          }
+          onTextChanged: searchDebounce.restart()
+          Keys.onEscapePressed: root.close()
+        }
 
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.previewStop(modelData.code, modelData.descr)
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          text: "Searching…"
+          visible: root.searching
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          wrapMode: Text.WordWrap
+          text: root.searchError
+          visible: root.searchError !== ""
+        }
+
+        Repeater {
+          model: root.searchResults
+
+          Item {
+            required property var modelData
+            width: board.width
+            implicitHeight: rowCol.implicitHeight
+
+            Column {
+              id: rowCol
+              width: parent.width
+              spacing: 0
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: 14
+                font.bold: true
+                wrapMode: Text.WordWrap
+                text: modelData.descr || modelData.stop_code
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.previewStop(modelData.stop_code, modelData.descr || "")
+                    root.focusStopOnMap(modelData.stop_code)
+                  }
+                }
+              }
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                opacity: 0.6
+                font.family: root.contentFontFamily
+                font.pixelSize: 12
+                text: "Στάση " + modelData.stop_code
+              }
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                opacity: 0.8
+                font.family: root.contentFontFamily
+                font.pixelSize: 12
+                font.underline: true
+                text: "＋ Watch"
+                visible: root.watchList.indexOf(modelData.stop_code) === -1
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    if (root.hostWidget) root.hostWidget.watchStop(modelData.stop_code)
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.bold: true
+          font.pixelSize: 14
+          text: "Lines"
+          visible: root.lineResults.length > 0 || root.searchingLines
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          text: "Searching lines…"
+          visible: root.searchingLines
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          wrapMode: Text.WordWrap
+          text: root.lineError
+          visible: root.lineError !== ""
+        }
+
+        Repeater {
+          model: root.lineResults
+
+          Item {
+            required property var modelData
+            width: board.width
+            implicitHeight: lineRow.implicitHeight
+
+            Column {
+              id: lineRow
+              width: parent.width
+              spacing: 0
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: 14
+                font.bold: true
+                wrapMode: Text.WordWrap
+                text: "Line " + (modelData.line_id || modelData.line_code)
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.showLineOverlay(modelData.line_code,
+                    (modelData.line_id || modelData.line_code) + " · " + (modelData.line_descr || ""))
+                }
+              }
+
+              Text {
+                width: parent.width
+                color: root.contentForeground
+                opacity: 0.6
+                font.family: root.contentFontFamily
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                text: modelData.line_descr || ""
+                visible: (modelData.line_descr || "") !== ""
+              }
             }
           }
         }
       }
 
-      Text {
+      Column {
+        id: mapCol
+        visible: root.activeTab === "map"
         width: parent.width
-        color: root.contentForeground
-        opacity: 0.6
-        font.family: root.contentFontFamily
-        font.pixelSize: 12
-        wrapMode: Text.WordWrap
-        text: root.overlayLine !== ""
-          ? "Line " + root.overlayDescr + " — tap to clear"
-          : root.mapState
-        visible: text !== ""
+        spacing: 8
 
-        MouseArea {
-          anchors.fill: parent
-          cursorShape: Qt.PointingHandCursor
-          enabled: root.overlayLine !== ""
-          onClicked: root.clearLineOverlay()
+        Row {
+          width: parent.width
+          spacing: 16
+
+          Text {
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: 14
+            font.bold: true
+            text: "＋"
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.zoomMap(1)
+            }
+          }
+
+          Text {
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: 14
+            font.bold: true
+            text: "－"
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.zoomMap(-1)
+            }
+          }
+
+          Text {
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: 12
+            font.underline: true
+            text: "⌖ Syntagma"
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.recenterSyntagma()
+            }
+          }
+
+          Text {
+            color: root.contentForeground
+            opacity: 0.6
+            font.family: root.contentFontFamily
+            font.pixelSize: 12
+            text: "drag to pan · scroll to zoom · tap a dot"
+          }
         }
-      }
 
-      Component.onCompleted: root.updateTiles()
+        Item {
+          id: mapView
+          width: root.mapViewWidth
+          height: root.mapViewHeight
+          clip: true
+
+          MouseArea {
+            id: mapPan
+            anchors.fill: parent
+            property real pressX: 0
+            property real pressY: 0
+            property bool panning: false
+            onPressed: function(e) {
+              pressX = e.x
+              pressY = e.y
+              panning = false
+            }
+            onPositionChanged: function(e) {
+              if (!pressed) return
+              if (!panning && Math.hypot(e.x - pressX, e.y - pressY) < 4) return
+              panning = true
+              root.panMapBy(pressX - e.x, pressY - e.y)
+              pressX = e.x
+              pressY = e.y
+            }
+            onReleased: function(e) {
+              if (panning) {
+                panning = false
+                root.updateMarkers()
+              } else {
+                root.tapMapAt(e.x, e.y)
+              }
+            }
+            onWheel: function(w) {
+              if (w.angleDelta.y > 0) root.zoomMap(1)
+              else root.zoomMap(-1)
+            }
+          }
+
+          Repeater {
+            model: root.mapTiles
+
+            Image {
+              required property var modelData
+              x: modelData.px
+              y: modelData.py
+              width: 256
+              height: 256
+              source: modelData.path
+              asynchronous: true
+            }
+          }
+
+          // The route itself, drawn under the station dots below — without
+          // this a dense line's dots alone just read as a blob, not a route.
+          Repeater {
+            model: root.overlayRoutePaths
+
+            Shape {
+              id: routeShape
+              required property var modelData
+              anchors.fill: parent
+              preferredRendererType: Shape.CurveRenderer
+
+              ShapePath {
+                strokeColor: "#b3541e"
+                strokeWidth: 3
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+
+                PathPolyline {
+                  path: {
+                    var pts = []
+                    for (var i = 0; i < routeShape.modelData.length; i++)
+                      pts.push(Qt.point(routeShape.modelData[i].x, routeShape.modelData[i].y))
+                    return pts
+                  }
+                }
+              }
+            }
+          }
+
+          Repeater {
+            model: root.overlayStops
+
+            Rectangle {
+              required property var modelData
+              x: modelData.px - 7
+              y: modelData.py - 7
+              width: 14
+              height: 14
+              radius: 7
+              color: "#b3541e"
+              border.color: "white"
+              border.width: 2
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.previewStop(modelData.code, modelData.descr)
+              }
+            }
+          }
+
+          Repeater {
+            model: root.visibleStops
+
+            Rectangle {
+              required property var modelData
+              x: modelData.px - 5
+              y: modelData.py - 5
+              width: 10
+              height: 10
+              radius: 5
+              color: "white"
+              border.color: "#333333"
+              border.width: 1
+              visible: root.overlayStops.length === 0
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.previewStop(modelData.code, modelData.descr)
+              }
+            }
+          }
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.6
+          font.family: root.contentFontFamily
+          font.pixelSize: 12
+          wrapMode: Text.WordWrap
+          text: root.overlayLine !== ""
+            ? "Line " + root.overlayDescr + " — tap to clear"
+            : root.mapState
+          visible: text !== ""
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            enabled: root.overlayLine !== ""
+            onClicked: root.clearLineOverlay()
+          }
+        }
+
+        Text {
+          width: parent.width
+          color: root.contentForeground
+          opacity: 0.4
+          font.family: root.contentFontFamily
+          font.pixelSize: 10
+          text: "© OpenStreetMap contributors"
+        }
+
+        Component.onCompleted: root.updateTiles()
+      }
     }
   }
 }

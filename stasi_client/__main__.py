@@ -59,7 +59,7 @@ def cmd_map_tiles(args):
             refs.append(tuple(int(p) for p in parts))
         except ValueError:
             raise RuntimeError("bad tile ref (want z/x/y): %s" % ref)
-    results = tiles.fetch_tiles(refs, force_refresh=args.force_refresh)
+    results = tiles.fetch_tiles(refs, style=args.style, force_refresh=args.force_refresh)
     json.dump({"tiles": results}, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
 
@@ -121,6 +121,8 @@ def build_parser():
                                     "from QML)")
     map_tiles.add_argument("--tile", required=True, action="append",
                            help="z/x/y tile ref (repeat for a batch)")
+    map_tiles.add_argument("--style", choices=sorted(tiles.TILE_STYLES),
+                           default="light", help="basemap style (default light)")
     map_tiles.add_argument("--force-refresh", action="store_true",
                            help="ignore the on-disk tile cache")
     map_tiles.set_defaults(func=cmd_map_tiles)
